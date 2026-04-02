@@ -144,6 +144,12 @@ class IntersectionSimulation:
         # 1. Phase transition
         self._process_action(action)
 
+        # Track if emergency gets green before discharge clears it
+        emergency_handled = False
+        if self.emergency is not None:
+            if self.emergency["direction"] in _GREEN_DIRECTIONS.get(self.current_phase, []):
+                emergency_handled = True
+
         # 2. Discharge vehicles on green approaches
         vehicles_cleared = self._discharge_vehicles()
 
@@ -154,7 +160,7 @@ class IntersectionSimulation:
         self._update_emergency()
 
         # 5. Reward computation
-        reward = self._calculate_reward(vehicles_cleared, action)
+        reward = self._calculate_reward(vehicles_cleared, action, emergency_handled)
 
         # 6. Bookkeeping
         self.phase_duration += 1
@@ -324,7 +330,7 @@ class IntersectionSimulation:
     # Reward Calculation
     # ------------------------------------------------------------------
 
-    def _calculate_reward(self, vehicles_cleared: int, action: str) -> float:
+    def _calculate_reward(self, vehicles_cleared: int, action: str, emergency_handled: bool) -> float:
         """Compute the per-step reward signal.
 
         Components:
@@ -338,6 +344,7 @@ class IntersectionSimulation:
         Args:
             vehicles_cleared: Vehicles discharged this step.
             action: The action string the agent submitted.
+            emergency_handled: True if an emergency vehicle was given green and cleared.
 
         Returns:
             Combined reward for this simulation step.
@@ -350,16 +357,10 @@ class IntersectionSimulation:
 
         # --- Emergency handling ---
         emergency_reward: float = 0.0
-        if self.emergency is not None:
-            direction = self.emergency["direction"]
-            green_dirs = _GREEN_DIRECTIONS.get(self.current_phase, [])
-            direction_gets_green = direction in green_dirs
-
-            if direction_gets_green:
-                emergency_reward = 1.0
-            else:
-                emergency_reward = -0.2 * self.emergency["steps_waiting"]
-
+        if emergency_handled:
+            emergency_reward = 1.0
+        elif self.emergency is not None:
+            emergency_reward = -0.2 * self.emergency["steps_waiting"]
             if self.emergency["steps_waiting"] > EMERGENCY_TIMEOUT:
                 emergency_reward -= 5.0
 
