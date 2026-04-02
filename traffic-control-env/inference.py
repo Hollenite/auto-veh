@@ -35,7 +35,7 @@ from dotenv import load_dotenv
 from openai import OpenAI
 
 from models import SignalAction, TrafficAction, TrafficObservation
-from server.environment import TrafficEnvironment
+from client.client import TrafficEnv
 from server.graders import grade_episode
 from server.tasks import ALL_TASKS
 
@@ -287,19 +287,22 @@ def _try_parse_json(text: str) -> dict[str, Any] | None:
 
 def run_task(
     task_id: str,
-    client: OpenAI,
+    llm_client: OpenAI,
     model: str,
+    env_url: str,
 ) -> tuple[float, list[dict]]:
     """Run one full episode for a given task using the LLM agent.
 
-    Creates a local ``TrafficEnvironment``, resets it, and loops through
-    the episode calling the LLM for each decision. Collects the episode
-    history and computes the final grader score.
+    Connects to the environment server at ``env_url`` via the
+    ``TrafficEnv`` HTTP/WebSocket client, resets the environment,
+    and loops through the episode calling the LLM for each decision.
+    Collects episode history and computes the final grader score.
 
     Args:
         task_id: Task difficulty (``"easy"``, ``"medium"``, ``"hard"``).
-        client: Configured ``OpenAI`` client instance.
+        llm_client: Configured ``OpenAI`` client instance.
         model: Model name string to use for completions.
+        env_url: Base URL of the environment server.
 
     Returns:
         Tuple of ``(score, episode_history)`` where score is in [0.0, 1.0].
@@ -307,78 +310,83 @@ def run_task(
     task_config = ALL_TASKS[task_id]
     max_steps = task_config["max_steps"]
 
-    logger.info("Starting task '%s' (%d steps)", task_id, max_steps)
+    logger.info("Starting task '%s' (%d steps) at %s", task_id, max_steps, env_url)
 
-    # Create environment directly (no server needed)
-    env = TrafficEnvironment(task_id=task_id)
-    obs = env.reset()
+    # Connect to the environment server via HTTP client
+    env = TrafficEnv(base_url=env_url, task_id=task_id)
 
     episode_history: list[dict] = []
     conversation: list[dict[str, str]] = [
         {"role": "system", "content": SYSTEM_PROMPT},
     ]
 
-    for step in range(1, max_steps + 1):
-        # Build the prompt from the current observation
-        user_prompt = build_user_prompt(obs, step)
-        conversation.append({"role": "user", "content": user_prompt})
+    with env.sync() as client_env:
+        # Reset the environment and get initial observation
+        result = client_env.reset()
+        obs = result.observation
 
-        # Call the LLM
-        try:
-            response = client.chat.completions.create(
-                model=model,
-                messages=conversation,
-                temperature=0.1,
-                max_tokens=100,
-            )
-            llm_text = response.choices[0].message.content or ""
-        except Exception as e:
-            logger.warning("LLM call failed at step %d: %s", step, e)
-            llm_text = ""
+        for step in range(1, max_steps + 1):
+            # Build the prompt from the current observation
+            user_prompt = build_user_prompt(obs, step)
+            conversation.append({"role": "user", "content": user_prompt})
 
-        # Parse the action
-        action = parse_action(llm_text)
+            # Call the LLM
+            try:
+                response = llm_client.chat.completions.create(
+                    model=model,
+                    messages=conversation,
+                    temperature=0.1,
+                    max_tokens=100,
+                )
+                llm_text = response.choices[0].message.content or ""
+            except Exception as e:
+                logger.warning("LLM call failed at step %d: %s", step, e)
+                llm_text = ""
 
-        # Add assistant response to conversation for context continuity
-        conversation.append({"role": "assistant", "content": llm_text})
+            # Parse the action
+            action = parse_action(llm_text)
 
-        # Keep conversation history manageable (last 10 exchanges + system)
-        if len(conversation) > 21:
-            conversation = [conversation[0]] + conversation[-20:]
+            # Add assistant response to conversation for context continuity
+            conversation.append({"role": "assistant", "content": llm_text})
 
-        # Execute action in the environment
-        obs = env.step(action)
+            # Keep conversation history manageable (last 10 exchanges + system)
+            if len(conversation) > 21:
+                conversation = [conversation[0]] + conversation[-20:]
 
-        # Record step state for grading
-        step_state = {
-            "queues": {
-                "NORTH": obs.queue_north,
-                "SOUTH": obs.queue_south,
-                "EAST": obs.queue_east,
-                "WEST": obs.queue_west,
-            },
-            "current_phase": obs.current_phase,
-            "phase_duration": obs.phase_duration,
-            "emergency_present": obs.emergency_present,
-            "emergency_direction": obs.emergency_direction,
-            "emergency_urgency": obs.emergency_urgency,
-            "total_vehicles_cleared": obs.total_vehicles_cleared,
-            "total_wait_time": obs.total_wait_time,
-            "reward": obs.reward,
-            "message": obs.message,
-        }
-        episode_history.append(step_state)
+            # Execute action in the environment via HTTP client
+            result = client_env.step(action)
+            obs = result.observation
 
-        if step % 10 == 0:
-            logger.info(
-                "  Step %d/%d — cleared=%d, wait=%d, reward=%.4f, action=%s",
-                step, max_steps,
-                obs.total_vehicles_cleared, obs.total_wait_time,
-                obs.reward, action.action.value,
-            )
+            # Record step state for grading
+            step_state = {
+                "queues": {
+                    "NORTH": obs.queue_north,
+                    "SOUTH": obs.queue_south,
+                    "EAST": obs.queue_east,
+                    "WEST": obs.queue_west,
+                },
+                "current_phase": obs.current_phase,
+                "phase_duration": obs.phase_duration,
+                "emergency_present": obs.emergency_present,
+                "emergency_direction": obs.emergency_direction,
+                "emergency_urgency": obs.emergency_urgency,
+                "total_vehicles_cleared": obs.total_vehicles_cleared,
+                "total_wait_time": obs.total_wait_time,
+                "reward": obs.reward,
+                "message": obs.message,
+            }
+            episode_history.append(step_state)
 
-        if obs.done:
-            break
+            if step % 10 == 0:
+                logger.info(
+                    "  Step %d/%d — cleared=%d, wait=%d, reward=%.4f, action=%s",
+                    step, max_steps,
+                    obs.total_vehicles_cleared, obs.total_wait_time,
+                    obs.reward, action.action.value,
+                )
+
+            if result.done:
+                break
 
     # Grade the episode
     score = grade_episode(task_id, episode_history)
@@ -448,10 +456,12 @@ def main() -> None:
         print(f"{'─' * 50}")
 
         try:
+            env_url = os.environ.get("HF_SPACE_URL", "http://localhost:8000")
             score, history = run_task(
                 task_id=task_id,
-                client=client,
+                llm_client=client,
                 model=model_name,
+                env_url=env_url,
             )
             scores[task_id] = score
             threshold = ALL_TASKS[task_id]["success_threshold"]
