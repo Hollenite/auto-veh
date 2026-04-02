@@ -98,13 +98,23 @@ class TrafficEnv(EnvClient[TrafficAction, TrafficObservation, TrafficState]):
             ``StepResult`` containing the ``TrafficObservation``, reward, and done flag.
         """
         # The observation may be nested or flat depending on server response format
-        obs_data = payload.get("observation", payload)
+        obs_data = dict(payload.get("observation", payload))
+
+        # OpenEnv may strip reward, done, and success from the observation
+        # and promote them to the top level. We merge them back so our model is fully formed.
+        if "reward" in payload and "reward" not in obs_data:
+            obs_data["reward"] = payload["reward"]
+        if "done" in payload and "done" not in obs_data:
+            obs_data["done"] = payload["done"]
+        if "success" in payload and "success" not in obs_data:
+            obs_data["success"] = payload["success"]
+
         observation = TrafficObservation(**obs_data)
 
         return StepResult(
             observation=observation,
-            reward=observation.reward,
-            done=observation.done,
+            reward=payload.get("reward", observation.reward),
+            done=payload.get("done", observation.done),
         )
 
     def _parse_state(self, payload: Dict[str, Any]) -> TrafficState:

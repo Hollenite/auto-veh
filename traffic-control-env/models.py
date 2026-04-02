@@ -164,13 +164,13 @@ class TrafficObservation(BaseModel):
 
     # --- Per-step reward and episode signals ---
     reward: float = Field(
-        ..., description="Reward earned on this simulation step."
+        default=0.0, description="Reward earned on this simulation step."
     )
     done: bool = Field(
-        ..., description="Whether the episode has terminated."
+        default=False, description="Whether the episode has terminated."
     )
     success: bool = Field(
-        ..., description="Whether the episode ended successfully."
+        default=False, description="Whether the episode ended successfully."
     )
     message: str = Field(
         default="", description="Optional human-readable status message."
