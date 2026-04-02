@@ -98,7 +98,7 @@ class IntersectionSimulation:
     # Public API
     # ------------------------------------------------------------------
 
-    def reset(self) -> dict:
+    def reset(self, seed: int | None = None) -> dict:
         """Reset all simulation state and return the initial state dict.
 
         Queues are zeroed, the phase is set to NS_GREEN (index 0),
@@ -116,8 +116,11 @@ class IntersectionSimulation:
         self.total_wait_time = 0
         self.step_count = 0
 
-        # Re-seed RNG for reproducible episodes
-        self.rng = np.random.default_rng(seed=42)
+        # Re-seed RNG for reproducible episodes if seed is provided, else random
+        if seed is not None:
+            self.rng = np.random.default_rng(seed=seed)
+        else:
+            self.rng = np.random.default_rng()
 
         return self._build_state_dict(reward=0.0)
 

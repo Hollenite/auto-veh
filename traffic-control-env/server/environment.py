@@ -104,10 +104,15 @@ class TrafficEnvironment(Environment[TrafficAction, TrafficObservation, TrafficS
         Returns:
             Initial ``TrafficObservation`` with zeroed queues and default phase.
         """
-        self._reset_rubric()
+        # If a task_id is passed during reset, update environment difficulty
+        task_id = kwargs.get("task_id")
+        if task_id and task_id in ALL_TASKS and task_id != self.task_id:
+            self.task_id = task_id
+            self.task_config = ALL_TASKS[task_id]
+            self.sim = IntersectionSimulation(self.task_config)
 
         # Reset the simulation engine
-        sim_state = self.sim.reset()
+        sim_state = self.sim.reset(seed=seed)
 
         # Clear episode tracking
         self._episode_history = []

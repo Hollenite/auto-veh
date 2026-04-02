@@ -67,8 +67,17 @@ class TrafficEnv(EnvClient[TrafficAction, TrafficObservation, TrafficState]):
         self.task_id: str = task_id
 
     # ------------------------------------------------------------------
-    # Abstract method implementations
+    # Abstract method implementations & System Overrides
     # ------------------------------------------------------------------
+
+    async def reset(self, **kwargs: Any) -> StepResult[TrafficObservation]:
+        """Override EnvClient reset to safely inject the local task_id.
+
+        This ensures that when calling env.reset(), the client's current
+        task_id configuration request is actively forced in the payload.
+        """
+        kwargs.setdefault("task_id", self.task_id)
+        return await super().reset(**kwargs)
 
     def _step_payload(self, action: TrafficAction) -> Dict[str, Any]:
         """Serialize a ``TrafficAction`` into the JSON payload for the server.
