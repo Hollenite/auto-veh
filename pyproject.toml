@@ -35,8 +35,8 @@ dependencies = [
 ]
 
 [project.urls]
-Homepage = "https://huggingface.co/spaces/Hollenite/traffic-control-env"
-Repository = "https://github.com/Hollenite/traffic-control-env"
+Homepage = "https://huggingface.co/spaces/Hollenite/auto-veh-v2"
+Repository = "https://github.com/Hollenite/auto-veh"
 
 [tool.setuptools]
 packages = ["server", "client"]

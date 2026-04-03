@@ -4,7 +4,7 @@ version: "0.1.0"
 type: space
 runtime: fastapi
 app: server.app:app
-port: 8000
+port: 7860
 description: >
   Autonomous Traffic Control environment. An AI agent controls a 4-way
   intersection signal to maximize vehicle throughput and handle emergency
