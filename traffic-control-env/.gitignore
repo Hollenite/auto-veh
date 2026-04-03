@@ -2,6 +2,10 @@ venv/
 .env
 traffic_dqn_easy.pt
 traffic_dqn_easy_interrupted.pt
-traffic_dqn_easy.pt
 traffic_dqn_medium.pt
 traffic_dqn_hard.pt
+
+__pycache__/
+*.pyc
+*.pyo
+.DS_Store

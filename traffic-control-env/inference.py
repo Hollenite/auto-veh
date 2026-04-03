@@ -45,6 +45,13 @@ from server.tasks import ALL_TASKS
 
 load_dotenv()
 
+API_BASE_URL = os.getenv("API_BASE_URL", "https://api.openai.com/v1")
+MODEL_NAME = os.getenv("MODEL_NAME", "gpt-4.1-mini")
+HF_TOKEN = os.getenv("HF_TOKEN")
+
+if HF_TOKEN is None:
+    raise ValueError("HF_TOKEN environment variable is required")
+
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s | %(levelname)s | %(message)s",
@@ -360,6 +367,7 @@ def run_task(
     llm_client: OpenAI | None,
     model: str,
     env_url: str,
+    step_log: list[dict],
 ) -> tuple[float, list[dict]]:
     """Run one full episode for a given task using the LLM agent.
 
@@ -396,6 +404,7 @@ def run_task(
         obs = result.observation
 
         for step in range(1, max_steps + 1):
+            error_msg = None
             if llm_client is not None:
                 # LLM path
                 user_prompt = build_user_prompt(obs, step)
@@ -409,6 +418,7 @@ def run_task(
                     )
                     llm_text = response.choices[0].message.content or ""
                 except Exception as e:
+                    error_msg = str(e)
                     logger.warning("LLM call failed at step %d: %s", step, e)
                     llm_text = ""
                 action = parse_action(llm_text)
@@ -420,8 +430,21 @@ def run_task(
                 action = heuristic_policy(obs)
 
             # Execute action in the environment via HTTP client
-            result = client_env.step(action)
-            obs = result.observation
+            try:
+                result = client_env.step(action)
+                obs = result.observation
+                done = result.done
+            except Exception as e:
+                error_msg = str(e)
+                done = True
+                
+            step_log.append({
+                "step": step,
+                "action": action.action.value,
+                "reward": obs.reward if 'obs' in locals() else 0.0,
+                "done": done,
+                "error": error_msg
+            })
 
             # Record step state for grading
             step_state = {
@@ -440,26 +463,21 @@ def run_task(
                 "total_wait_time": obs.total_wait_time,
                 "reward": obs.reward,
                 "message": obs.message,
+                "avg_wait_north": obs.avg_wait_north,
+                "avg_wait_south": obs.avg_wait_south,
+                "avg_wait_east":  obs.avg_wait_east,
+                "avg_wait_west":  obs.avg_wait_west,
             }
             episode_history.append(step_state)
 
-            if step % 10 == 0:
-                logger.info(
-                    "  Step %d/%d — cleared=%d, wait=%d, reward=%.4f, action=%s",
-                    step, max_steps,
-                    obs.total_vehicles_cleared, obs.total_wait_time,
-                    obs.reward, action.action.value,
-                )
+
 
             if result.done:
                 break
 
     # Grade the episode
     score = grade_episode(task_id, episode_history)
-    logger.info(
-        "Task '%s' complete — cleared=%d, wait=%d, score=%.4f",
-        task_id, obs.total_vehicles_cleared, obs.total_wait_time, score,
-    )
+
     return score, episode_history
 
 
@@ -468,96 +486,43 @@ def run_task(
 # ---------------------------------------------------------------------------
 
 def main() -> None:
-    """Entry point — run the baseline agent against all 3 tasks."""
-    start_time = time.time()
+    client = OpenAI(
+        base_url=API_BASE_URL,
+        api_key=HF_TOKEN,
+    )
 
-    print("=" * 60)
-    print("  Traffic Control Environment — Baseline Agent")
-    print("=" * 60)
-
-    # --- Load and validate environment variables ---
-    api_base_url = os.environ.get("API_BASE_URL")
-    model_name = os.environ.get("MODEL_NAME")
-    api_key = os.environ.get("OPENAI_API_KEY") or os.environ.get("HF_TOKEN")
-
-    missing = []
-    if not api_base_url:
-        missing.append("API_BASE_URL")
-    if not model_name:
-        missing.append("MODEL_NAME")
-    if not api_key:
-        missing.append("OPENAI_API_KEY (or HF_TOKEN)")
-
-    use_heuristic = bool(missing)
-    if missing:
-        logger.warning(
-            "Missing env vars: %s. Falling back to heuristic policy.",
-            ", ".join(missing),
-        )
-        print(f"\nWarning: {', '.join(missing)} not set. Using heuristic baseline.")
-        client = None
-    else:
-        print(f"\nAPI Base:  {api_base_url}")
-        print(f"Model:     {model_name}")
-        print(f"API Key:   {api_key[:8]}...{api_key[-4:]}")
-        print()
-
-        # --- Create OpenAI client ---
-        client = OpenAI(
-            base_url=api_base_url,
-            api_key=api_key,
-        )
-
-    # --- Run all 3 tasks ---
     task_ids = ["easy", "medium", "hard"]
-    scores: dict[str, float] = {}
-    all_success = True
+    env_url = os.environ.get("HF_SPACE_URL", "http://localhost:8000")
 
     for task_id in task_ids:
-        print(f"\n{'─' * 50}")
-        print(f"  Task: {task_id.upper()}")
-        print(f"{'─' * 50}")
-
+        print(f"[START] task={task_id} env=traffic-control-env model={MODEL_NAME}")
+        
+        step_log = []
+        score = 0.0
+        success = False
         try:
-            env_url = os.environ.get("HF_SPACE_URL", "http://localhost:8000")
             score, history = run_task(
                 task_id=task_id,
                 llm_client=client,
-                model=model_name or "heuristic",
+                model=MODEL_NAME,
                 env_url=env_url,
+                step_log=step_log
             )
-            scores[task_id] = score
             threshold = ALL_TASKS[task_id]["success_threshold"]
-            passed = score >= threshold
-            status = "✓ PASS" if passed else "✗ FAIL"
-            print(f"  Score: {score:.4f}  (threshold: {threshold})  [{status}]")
-
-            if not passed:
-                all_success = False
-
+            success = score >= threshold
         except Exception as e:
-            logger.exception("Task '%s' failed with error", task_id)
-            scores[task_id] = 0.0
-            print(f"  ERROR: {e}")
-            all_success = False
-
-    # --- Summary ---
-    elapsed = time.time() - start_time
-    overall = sum(scores.values()) / len(scores) if scores else 0.0
-
-    print(f"\n{'=' * 60}")
-    print(f"  RESULTS SUMMARY")
-    print(f"{'=' * 60}")
-    for task_id in task_ids:
-        s = scores.get(task_id, 0.0)
-        print(f"  {task_id:8s}: {s:.4f}")
-    print(f"  {'─' * 20}")
-    print(f"  Overall:  {overall:.4f}")
-    print(f"  Time:     {elapsed:.1f}s")
-    print(f"{'=' * 60}")
-
-    sys.exit(0 if all_success else 1)
-
+            pass
+            
+        for s in step_log:
+            reward_str = f"{s['reward']:.2f}"
+            done_str = "true" if s['done'] else "false"
+            error_str = s['error'] if s['error'] is not None else "null"
+            print(f"[STEP] step={s['step']} action={s['action']} reward={reward_str} done={done_str} error={error_str}")
+            
+        success_str = "true" if success else "false"
+        steps = len(step_log)
+        rewards_str = ",".join(f"{s['reward']:.2f}" for s in step_log)
+        print(f"[END] success={success_str} steps={steps} rewards={rewards_str}")
 
 if __name__ == "__main__":
     main()

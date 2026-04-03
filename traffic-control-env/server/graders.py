@@ -175,18 +175,19 @@ def _compute_fairness_score(episode_history: list[dict]) -> float:
     """
     if not episode_history:
         return 1.0
-    
+
     last = episode_history[-1]
-    avg_wait = last.get("avg_wait", {})
-    
-    if not avg_wait:
+
+    values = [
+        last.get("avg_wait_north", 0.0),
+        last.get("avg_wait_south", 0.0),
+        last.get("avg_wait_east", 0.0),
+        last.get("avg_wait_west", 0.0),
+    ]
+
+    if not any(values) or max(values) == 0:
         return 1.0
-    
-    values = list(avg_wait.values())
-    if not values or max(values) == 0:
-        return 1.0
-    
-    # Fairness = 1 - (range / max) — penalizes starving one direction
+
     return _clamp(1.0 - (max(values) - min(values)) / max(max(values), 1.0))
 
 
