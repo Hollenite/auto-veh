@@ -5,7 +5,10 @@ Defines the typed request/response models used across the server and client
 for the OpenEnv-compliant traffic signal control environment.
 
 Models:
-    SignalAction   — Enum of valid signal control actions.
+    SignalCommand  — Enum of valid signal control commands (aliased as SignalAction).
+    VehicleType    — Enum for vehicle classification (normal / emergency).
+    Direction      — Enum for approach directions at the intersection.
+    VehicleRecord  — Tracks an individual vehicle in a queue.
     TrafficAction  — Agent action submitted each step.
     TrafficObservation — Full observation returned after each step.
     TrafficState   — Internal environment state exposed via /state endpoint.
@@ -23,30 +26,72 @@ from pydantic import BaseModel, Field, field_validator
 # Enums
 # ---------------------------------------------------------------------------
 
-class SignalAction(str, Enum):
-    """Discrete actions the agent can take to control the intersection signal.
+class SignalCommand(str, Enum):
+    """Discrete commands the agent can issue to control the intersection signal.
 
     Members:
-        KEEP_CURRENT:       Maintain the current signal phase unchanged.
-        SWITCH_PHASE:       Advance to the next phase in the rotation
-                            (NS_GREEN → ALL_RED → EW_GREEN → ALL_RED → …).
-        EMERGENCY_OVERRIDE: Force an immediate green for the approach that
-                            has an active emergency vehicle.
+        SET_NS_GREEN:        Switch signal to north-south green (east-west red).
+        SET_EW_GREEN:        Switch signal to east-west green (north-south red).
+        HOLD_CURRENT_PHASE:  Maintain the current signal phase unchanged.
+        SET_ALL_RED:         Force all approaches to red (safety clearance).
     """
 
-    KEEP_CURRENT = "keep_current"
-    SWITCH_PHASE = "switch_phase"
-    EMERGENCY_OVERRIDE = "emergency_override"
+    SET_NS_GREEN = "set_ns_green"
+    SET_EW_GREEN = "set_ew_green"
+    HOLD_CURRENT_PHASE = "hold_current_phase"
+    SET_ALL_RED = "set_all_red"
+
+
+# Backward-compatible alias so existing imports keep working.
+SignalAction = SignalCommand
+
+
+class VehicleType(str, Enum):
+    """Type of vehicle in the intersection queue."""
+
+    NORMAL = "normal"
+    EMERGENCY = "emergency"
+
+
+class Direction(str, Enum):
+    """Approach direction at the intersection."""
+
+    NORTH = "NORTH"
+    SOUTH = "SOUTH"
+    EAST = "EAST"
+    WEST = "WEST"
 
 
 # Valid compass directions used for emergency vehicle positions.
 VALID_DIRECTIONS = {"NORTH", "SOUTH", "EAST", "WEST"}
 
-# Valid signal phases for the intersection.
-VALID_PHASES = {"NS_GREEN", "EW_GREEN", "ALL_RED"}
+# Valid signal phases for the intersection (case-insensitive support).
+VALID_PHASES = {"NS_GREEN", "EW_GREEN", "ALL_RED", "ns_green", "ew_green", "all_red"}
 
 # Valid emergency urgency levels.
 VALID_URGENCIES = {"LOW", "HIGH", "CRITICAL"}
+
+
+# ---------------------------------------------------------------------------
+# Vehicle Record Model
+# ---------------------------------------------------------------------------
+
+class VehicleRecord(BaseModel):
+    """Tracks an individual vehicle in a queue.
+
+    Attributes:
+        vehicle_id:    Unique identifier string.
+        direction:     Which approach the vehicle is on.
+        vehicle_type:  NORMAL or EMERGENCY.
+        wait_time:     Steps this vehicle has been waiting.
+        arrival_step:  Simulation step when vehicle arrived.
+    """
+
+    vehicle_id: str
+    direction: Direction
+    vehicle_type: VehicleType = VehicleType.NORMAL
+    wait_time: int = Field(0, ge=0)
+    arrival_step: int = Field(0, ge=0)
 
 
 # ---------------------------------------------------------------------------
@@ -57,15 +102,15 @@ class TrafficAction(BaseModel):
     """Action submitted by the agent at each simulation step.
 
     Attributes:
-        action:              The signal control action to execute.
-        emergency_direction: When using EMERGENCY_OVERRIDE, the direction
+        action:              The signal control command to execute.
+        emergency_direction: When using an emergency-related action, the direction
                              the agent believes has the emergency vehicle.
                              Must be one of NORTH, SOUTH, EAST, WEST or None.
     """
 
-    action: SignalAction = Field(
+    action: SignalCommand = Field(
         ...,
-        description="Signal control action to execute this step.",
+        description="Signal control command to execute this step.",
     )
     emergency_direction: Optional[str] = Field(
         default=None,
@@ -95,7 +140,8 @@ class TrafficObservation(BaseModel):
     """Full observation returned by the environment after each step.
 
     Contains queue states, signal info, emergency status, cumulative
-    performance metrics, and per-step reward/episode signals.
+    performance metrics, per-direction average wait times, remaining steps,
+    and per-step reward/episode signals.
 
     Attributes:
         queue_north:            Vehicles queued on the NORTH approach (0–20).
@@ -109,6 +155,11 @@ class TrafficObservation(BaseModel):
         emergency_urgency:      Urgency level of the emergency (LOW | HIGH | CRITICAL).
         total_vehicles_cleared: Cumulative vehicles discharged this episode.
         total_wait_time:        Cumulative vehicle-steps of waiting this episode.
+        avg_wait_north:         Average wait time (steps) for vehicles on NORTH approach.
+        avg_wait_south:         Average wait time (steps) for vehicles on SOUTH approach.
+        avg_wait_east:          Average wait time (steps) for vehicles on EAST approach.
+        avg_wait_west:          Average wait time (steps) for vehicles on WEST approach.
+        steps_remaining:        Steps remaining until episode ends.
         current_step:           Current simulation step within the episode.
         reward:                 Reward earned on this step.
         done:                   Whether the episode has ended.
@@ -158,6 +209,31 @@ class TrafficObservation(BaseModel):
     total_wait_time: int = Field(
         ..., ge=0, description="Cumulative vehicle-steps of waiting this episode."
     )
+
+    # --- Per-direction average wait times ---
+    avg_wait_north: float = Field(
+        0.0, ge=0.0,
+        description="Average wait time (steps) for vehicles on NORTH approach.",
+    )
+    avg_wait_south: float = Field(
+        0.0, ge=0.0,
+        description="Average wait time (steps) for vehicles on SOUTH approach.",
+    )
+    avg_wait_east: float = Field(
+        0.0, ge=0.0,
+        description="Average wait time (steps) for vehicles on EAST approach.",
+    )
+    avg_wait_west: float = Field(
+        0.0, ge=0.0,
+        description="Average wait time (steps) for vehicles on WEST approach.",
+    )
+
+    # --- Episode countdown ---
+    steps_remaining: int = Field(
+        0, ge=0,
+        description="Steps remaining until episode ends.",
+    )
+
     current_step: int = Field(
         ..., ge=0, description="Current simulation step within the episode."
     )
@@ -181,12 +257,14 @@ class TrafficObservation(BaseModel):
     @field_validator("current_phase")
     @classmethod
     def validate_current_phase(cls, value: str) -> str:
-        """Ensure current_phase is a recognized signal phase."""
-        if value not in VALID_PHASES:
+        """Ensure current_phase is a recognized signal phase, normalized to uppercase."""
+        normalized = value.upper()
+        valid = {"NS_GREEN", "EW_GREEN", "ALL_RED"}
+        if normalized not in valid:
             raise ValueError(
-                f"current_phase must be one of {VALID_PHASES}, got '{value}'"
+                f"current_phase must be one of {valid}, got '{value}'"
             )
-        return value
+        return normalized
 
     @field_validator("emergency_direction")
     @classmethod
