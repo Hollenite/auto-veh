@@ -495,12 +495,11 @@ def main() -> None:
     env_url = os.environ.get("HF_SPACE_URL", "http://localhost:8000")
 
     for task_id in task_ids:
-        print(f"[START] task={task_id} env=traffic-control-env model={MODEL_NAME}")
-        
         step_log = []
         score = 0.0
         success = False
         try:
+            print(f"[START] task={task_id} env=traffic-control-env model={MODEL_NAME}")
             score, history = run_task(
                 task_id=task_id,
                 llm_client=client,
@@ -510,19 +509,24 @@ def main() -> None:
             )
             threshold = ALL_TASKS[task_id]["success_threshold"]
             success = score >= threshold
-        except Exception as e:
-            pass
             
-        for s in step_log:
-            reward_str = f"{s['reward']:.2f}"
-            done_str = "true" if s['done'] else "false"
-            error_str = s['error'] if s['error'] is not None else "null"
-            print(f"[STEP] step={s['step']} action={s['action']} reward={reward_str} done={done_str} error={error_str}")
-            
-        success_str = "true" if success else "false"
-        steps = len(step_log)
-        rewards_str = ",".join(f"{s['reward']:.2f}" for s in step_log)
-        print(f"[END] success={success_str} steps={steps} rewards={rewards_str}")
+            for s in step_log:
+                reward_str = f"{s['reward']:.2f}"
+                done_str = "true" if s['done'] else "false"
+                error_str = s['error'] if s['error'] is not None else "null"
+                print(f"[STEP] step={s['step']} action={s['action']} reward={reward_str} done={done_str} error={error_str}")
+        except BaseException as e:
+            success = False
+            for s in step_log:
+                reward_str = f"{s['reward']:.2f}"
+                done_str = "true" if s['done'] else "false"
+                error_str = s['error'] if s['error'] is not None else "null"
+                print(f"[STEP] step={s['step']} action={s['action']} reward={reward_str} done={done_str} error={error_str}")
+        finally:
+            success_str = "true" if success else "false"
+            steps = len(step_log)
+            rewards_str = ",".join(f"{s['reward']:.2f}" for s in step_log)
+            print(f"[END] success={success_str} steps={steps} rewards={rewards_str}")
 
 if __name__ == "__main__":
     main()

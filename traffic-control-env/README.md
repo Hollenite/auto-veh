@@ -22,10 +22,10 @@ To minimize wait times and maximize total intersection throughput, while always 
 
 The action space controls the signal phase of the intersection.
 
-| Action | Meaning |
-|---|---|
-| `KEEP_CURRENT` | Maintain the current signal phase. Ideal when the current green direction still has substantial traffic to clear. |
-| `SWITCH_PHASE` | Rotate to the next signal phase in the standard cycle (`NS_GREEN` → `ALL_RED` → `EW_GREEN` → `ALL_RED`). |
+| Action               | Meaning                                                                                                                                        |
+| -------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------- |
+| `KEEP_CURRENT`       | Maintain the current signal phase. Ideal when the current green direction still has substantial traffic to clear.                              |
+| `SWITCH_PHASE`       | Rotate to the next signal phase in the standard cycle (`NS_GREEN` → `ALL_RED` → `EW_GREEN` → `ALL_RED`).                                       |
 | `EMERGENCY_OVERRIDE` | Immediately force the signal green for the direction containing an active emergency vehicle, preempting standard cycles and minimum durations. |
 
 _Note: Every `TrafficAction` also optionally accepts an `emergency_direction` parameter to target overrides explicitly._
@@ -34,21 +34,21 @@ _Note: Every `TrafficAction` also optionally accepts an `emergency_direction` pa
 
 At each step, the environment provides the agent with a `TrafficObservation` containing the state of the intersection:
 
-| Field | Type | Description |
-|---|---|---|
-| `queue_north` | `int` | Current vehicle queue size at the North approach (0-20). |
-| `queue_south` | `int` | Current vehicle queue size at the South approach (0-20). |
-| `queue_east` |  `int` | Current vehicle queue size at the East approach (0-20). |
-| `queue_west` |  `int` | Current vehicle queue size at the West approach (0-20). |
-| `current_phase` | `str` | Active signal phase (`"NS_GREEN"`, `"EW_GREEN"`, or `"ALL_RED"`). |
-| `phase_duration`| `int` | Number of consecutive steps the current phase has been active. |
-| `emergency_present` | `bool` | True if an emergency vehicle is currently waiting. |
-| `emergency_direction`| `str \| None` | Direction the emergency vehicle is originating from. |
-| `emergency_urgency` | `str \| None` | Urgency of the emergency (`"LOW"`, `"HIGH"`, `"CRITICAL"`). |
-| `total_vehicles_cleared`| `int` | Total number of vehicles discharged so far this episode. |
-| `total_wait_time` | `int` | Cumulative waiting time accumulated by all queuing vehicles. |
-| `current_step` | `int` | Current episode tick (1 step = ~10 real-world seconds). |
-| `reward` | `float` | Scalar reward achieved in the immediate previous step. |
+| Field                    | Type          | Description                                                       |
+| ------------------------ | ------------- | ----------------------------------------------------------------- |
+| `queue_north`            | `int`         | Current vehicle queue size at the North approach (0-20).          |
+| `queue_south`            | `int`         | Current vehicle queue size at the South approach (0-20).          |
+| `queue_east`             | `int`         | Current vehicle queue size at the East approach (0-20).           |
+| `queue_west`             | `int`         | Current vehicle queue size at the West approach (0-20).           |
+| `current_phase`          | `str`         | Active signal phase (`"NS_GREEN"`, `"EW_GREEN"`, or `"ALL_RED"`). |
+| `phase_duration`         | `int`         | Number of consecutive steps the current phase has been active.    |
+| `emergency_present`      | `bool`        | True if an emergency vehicle is currently waiting.                |
+| `emergency_direction`    | `str \| None` | Direction the emergency vehicle is originating from.              |
+| `emergency_urgency`      | `str \| None` | Urgency of the emergency (`"LOW"`, `"HIGH"`, `"CRITICAL"`).       |
+| `total_vehicles_cleared` | `int`         | Total number of vehicles discharged so far this episode.          |
+| `total_wait_time`        | `int`         | Cumulative waiting time accumulated by all queuing vehicles.      |
+| `current_step`           | `int`         | Current episode tick (1 step = ~10 real-world seconds).           |
+| `reward`                 | `float`       | Scalar reward achieved in the immediate previous step.            |
 
 ## Reward Function
 
@@ -68,23 +68,27 @@ This function is highly informative because it continuously nudges the agent to 
 The environment supports three varied difficulty configurations:
 
 ### 1. Easy
+
 - **Description:** A balanced, 4-way intersection with steady predictable traffic. No emergencies occur.
 - **Rationale:** Tests the agent's fundamental ability to cycle phases without incurring wait penalties or signal thrashing.
 - **Grader:** Score based purely on cumulative wait time vs. throughput. Max score is 1.0.
 
 ### 2. Medium
+
 - **Description:** Models a rush-hour scenario with heavy asymmetric North-South load and occasional emergency vehicles.
 - **Rationale:** Requires the agent to break 50/50 phase splits to favor the dominant traffic flow while staying vigilant for emergencies.
 - **Grader:** Combines Wait/Throughput ($70\%$) and Emergency Response Time ($30\%$).
 
 ### 3. Hard
-- **Description:** A traffic surge with high overall volume and multiple, overlapping simultaneous emergencies. 
+
+- **Description:** A traffic surge with high overall volume and multiple, overlapping simultaneous emergencies.
 - **Rationale:** Strains intersection capacity. Tests the agent's absolute prioritization of emergencies under extreme pressure and their ability to prevent gridlock imbalances in opposing queues.
 - **Grader:** Combines Wait/Throughput ($40\%$), Emergency Response Time ($40\%$), and Queue Balance uniformity ($20\%$).
 
 ## Environment Design
 
 The simulation uses discrete time steps representing ~10-second intervals.
+
 1. **Intersection Geometry:** 4 approaches (N, S, E, W), discharging up to 2 vehicles per tick when given green.
 2. **Phase Transitions:** Transitions strictly follow `NS_GREEN` -> `ALL_RED` -> `EW_GREEN`. `ALL_RED` phases exist to simulate safety clearance intervals.
 3. **Stochasticity:** Vehicle arrivals are controlled probabilistically over Gaussian distributions based on the difficulty configuration.
@@ -93,6 +97,7 @@ The simulation uses discrete time steps representing ~10-second intervals.
 ## Setup & Installation
 
 ### Local Installation
+
 1. Clone the repository.
 2. Ensure you have Python 3.10+ installed.
 3. Install dependencies:
@@ -105,7 +110,9 @@ The simulation uses discrete time steps representing ~10-second intervals.
    ```
 
 ### Docker
+
 To run inside a pristine Docker container for deployment to HuggingFace spaces:
+
 ```bash
 docker build -t traffic-env .
 docker run -p 8000:8000 -e ENABLE_WEB_INTERFACE=true traffic-env
@@ -126,21 +133,21 @@ with env:
     # 1. Reset Environment
     result = env.reset()
     obs = result.observation
-    
+
     while not result.done:
         # 2. Logic inference...
         if obs.emergency_present:
             action = TrafficAction(
-                action=SignalAction.EMERGENCY_OVERRIDE, 
+                action=SignalAction.EMERGENCY_OVERRIDE,
                 emergency_direction=obs.emergency_direction
             )
         else:
             action = TrafficAction(action=SignalAction.KEEP_CURRENT)
-            
+
         # 3. Take Step
         result = env.step(action)
         obs = result.observation
-        
+
     print(f"Final Score: {env.final_score}")
 ```
 
@@ -148,11 +155,11 @@ with env:
 
 The baseline agent utilizes an LLM passing system prompts, observing current metrics, and interpreting hints.
 
-| Task | Score | Model |
-|---|---|---|
-| Easy | TBD | gpt-4o-mini |
-| Medium | TBD | gpt-4o-mini |
-| Hard | TBD | gpt-4o-mini |
+| Task   | Score | Model       |
+| ------ | ----- | ----------- |
+| Easy   | TBD   | gpt-4o-mini |
+| Medium | TBD   | gpt-4o-mini |
+| Hard   | TBD   | gpt-4o-mini |
 
 ## Why This Fills a Gap
 
