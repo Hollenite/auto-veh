@@ -24,11 +24,15 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 import pytest
 
 from models import (
+    Direction,
     SignalAction,
+    SignalCommand,
     TrafficAction,
     TrafficObservation,
     TrafficState,
     VALID_PHASES,
+    VehicleType,
+    VehicleRecord,
 )
 from server.environment import TrafficEnvironment
 from server.graders import grade_episode
@@ -90,7 +94,7 @@ class TestReset:
     def test_reset_clears_previous_state(self, easy_env: TrafficEnvironment):
         """Calling reset() after steps should restore initial state."""
         # Run a few steps
-        action = TrafficAction(action=SignalAction.KEEP_CURRENT)
+        action = TrafficAction(action=SignalCommand.HOLD_CURRENT_PHASE)
         for _ in range(5):
             easy_env.step(action)
 
@@ -119,20 +123,20 @@ class TestStepCounting:
 
     def test_step_increments_step_count(self, easy_env: TrafficEnvironment):
         """A single step() should increment step_count by 1."""
-        action = TrafficAction(action=SignalAction.KEEP_CURRENT)
+        action = TrafficAction(action=SignalCommand.HOLD_CURRENT_PHASE)
         easy_env.step(action)
         assert easy_env.state.step_count == 1
 
     def test_multiple_steps_increment_correctly(self, easy_env: TrafficEnvironment):
         """Multiple steps should increment step_count linearly."""
-        action = TrafficAction(action=SignalAction.KEEP_CURRENT)
+        action = TrafficAction(action=SignalCommand.HOLD_CURRENT_PHASE)
         for i in range(10):
             easy_env.step(action)
         assert easy_env.state.step_count == 10
 
     def test_step_returns_observation(self, easy_env: TrafficEnvironment):
         """step() should return a TrafficObservation with updated current_step."""
-        action = TrafficAction(action=SignalAction.KEEP_CURRENT)
+        action = TrafficAction(action=SignalCommand.HOLD_CURRENT_PHASE)
         obs = easy_env.step(action)
         assert isinstance(obs, TrafficObservation)
         assert obs.current_step == 1
@@ -147,7 +151,7 @@ class TestEpisodeTermination:
 
     def test_episode_ends_at_max_steps_easy(self, easy_env: TrafficEnvironment):
         """Easy task (50 steps): done=True on step 50, False on step 49."""
-        action = TrafficAction(action=SignalAction.KEEP_CURRENT)
+        action = TrafficAction(action=SignalCommand.HOLD_CURRENT_PHASE)
 
         for i in range(49):
             obs = easy_env.step(action)
@@ -158,7 +162,7 @@ class TestEpisodeTermination:
 
     def test_episode_ends_at_max_steps_hard(self, hard_env: TrafficEnvironment):
         """Hard task (60 steps): done=True on step 60."""
-        action = TrafficAction(action=SignalAction.KEEP_CURRENT)
+        action = TrafficAction(action=SignalCommand.HOLD_CURRENT_PHASE)
 
         for i in range(59):
             obs = hard_env.step(action)
@@ -169,7 +173,7 @@ class TestEpisodeTermination:
 
     def test_final_step_includes_score_message(self, easy_env: TrafficEnvironment):
         """The final step's message should contain the episode score."""
-        action = TrafficAction(action=SignalAction.KEEP_CURRENT)
+        action = TrafficAction(action=SignalCommand.HOLD_CURRENT_PHASE)
         for _ in range(50):
             obs = easy_env.step(action)
 
@@ -191,9 +195,13 @@ class TestEmergencyOverride:
             "urgency": "HIGH",
             "steps_waiting": 0,
         }
+        # Add vehicle to queue to ensure discharge + reward
+        easy_env.sim.queues["NORTH"].append(
+            VehicleRecord(vehicle_id="emg", direction=Direction("NORTH"), vehicle_type=VehicleType.EMERGENCY, arrival_step=0, wait_time=0)
+        )
 
         action = TrafficAction(
-            action=SignalAction.EMERGENCY_OVERRIDE,
+            action=SignalCommand.SET_NS_GREEN,
             emergency_direction="NORTH",
         )
         obs = easy_env.step(action)
@@ -210,7 +218,7 @@ class TestEmergencyOverride:
             "steps_waiting": 3,
         }
 
-        action = TrafficAction(action=SignalAction.KEEP_CURRENT)
+        action = TrafficAction(action=SignalCommand.HOLD_CURRENT_PHASE)
         obs = easy_env.step(action)
 
         # Emergency might have been resolved or still present depending on phase
@@ -237,9 +245,9 @@ class TestGraderScores:
         for i in range(max_steps):
             # Alternate between keep and switch for a reasonable strategy
             if i % 5 == 4:
-                action = TrafficAction(action=SignalAction.SWITCH_PHASE)
+                action = TrafficAction(action=SignalCommand.SET_EW_GREEN)
             else:
-                action = TrafficAction(action=SignalAction.KEEP_CURRENT)
+                action = TrafficAction(action=SignalCommand.HOLD_CURRENT_PHASE)
 
             obs = env.step(action)
             history.append({
@@ -283,43 +291,42 @@ class TestPhaseSwitch:
     """Tests for signal phase transition behaviour."""
 
     def test_switch_phase_changes_signal(self, easy_env: TrafficEnvironment):
-        """SWITCH_PHASE should advance from NS_GREEN to ALL_RED."""
+        """SET_EW_GREEN should advance from NS_GREEN."""
         # Need to wait for MIN_PHASE_DURATION steps first
-        keep = TrafficAction(action=SignalAction.KEEP_CURRENT)
+        keep = TrafficAction(action=SignalCommand.HOLD_CURRENT_PHASE)
         easy_env.step(keep)
         easy_env.step(keep)
 
         initial_phase = easy_env.state.current_phase
         assert initial_phase == "NS_GREEN"
 
-        switch = TrafficAction(action=SignalAction.SWITCH_PHASE)
+        switch = TrafficAction(action=SignalCommand.SET_EW_GREEN)
         obs = easy_env.step(switch)
 
-        assert obs.current_phase == "ALL_RED", (
-            f"Expected ALL_RED after switching from NS_GREEN, got {obs.current_phase}"
-        )
+        assert obs.current_phase == "EW_GREEN"
+
 
     def test_full_phase_rotation(self, easy_env: TrafficEnvironment):
-        """Cycling through all 4 phases in the rotation should work."""
-        keep = TrafficAction(action=SignalAction.KEEP_CURRENT)
-        switch = TrafficAction(action=SignalAction.SWITCH_PHASE)
-
-        expected_phases = ["NS_GREEN", "ALL_RED", "EW_GREEN", "ALL_RED"]
+        """Cycling through phases should work with direct commands."""
+        keep = TrafficAction(action=SignalCommand.HOLD_CURRENT_PHASE)
+        
+        expected_phases = ["NS_GREEN", "ALL_RED", "EW_GREEN", "NS_GREEN"]
         assert easy_env.state.current_phase == expected_phases[0]
+        
+        actions_to_switch = [SignalCommand.SET_ALL_RED, SignalCommand.SET_EW_GREEN, SignalCommand.SET_NS_GREEN]
 
         for i in range(1, 4):
             # Wait for MIN_PHASE_DURATION
             easy_env.step(keep)
             easy_env.step(keep)
             # Switch
+            switch = TrafficAction(action=actions_to_switch[i-1])
             obs = easy_env.step(switch)
-            assert obs.current_phase == expected_phases[i], (
-                f"Step {i}: expected {expected_phases[i]}, got {obs.current_phase}"
-            )
+            assert obs.current_phase == expected_phases[i]
 
     def test_switch_blocked_before_min_duration(self, easy_env: TrafficEnvironment):
         """SWITCH_PHASE should be ignored if phase_duration < MIN_PHASE_DURATION."""
-        switch = TrafficAction(action=SignalAction.SWITCH_PHASE)
+        switch = TrafficAction(action=SignalCommand.SET_EW_GREEN)
         obs = easy_env.step(switch)
 
         # Phase should NOT have changed (duration was 0 < 2)
@@ -338,7 +345,7 @@ class TestModelSerialization:
     def test_traffic_action_roundtrip(self):
         """TrafficAction should serialize and deserialize losslessly."""
         original = TrafficAction(
-            action=SignalAction.EMERGENCY_OVERRIDE,
+            action=SignalCommand.SET_NS_GREEN,
             emergency_direction="NORTH",
         )
         dumped = original.model_dump()
@@ -349,7 +356,7 @@ class TestModelSerialization:
 
     def test_traffic_action_json_roundtrip(self):
         """TrafficAction should round-trip through JSON."""
-        original = TrafficAction(action=SignalAction.SWITCH_PHASE)
+        original = TrafficAction(action=SignalCommand.SET_EW_GREEN)
         json_str = original.model_dump_json()
         restored = TrafficAction.model_validate_json(json_str)
 
@@ -371,6 +378,23 @@ class TestModelSerialization:
         restored = TrafficObservation.model_validate(dumped)
 
         assert restored == original
+
+    def test_observation_has_avg_wait_fields(self):
+        """TrafficObservation should include avg_wait fields after a step."""
+        env = TrafficEnvironment("easy")
+        env.reset()
+        action = TrafficAction(action=SignalCommand.HOLD_CURRENT_PHASE)
+        obs = env.step(action).observation if hasattr(env.step(action), 'observation') else env.step(action)
+        # Check via direct environment step
+        env2 = TrafficEnvironment("easy")
+        env2.reset()
+        result_obs = env2.step(TrafficAction(action=SignalCommand.HOLD_CURRENT_PHASE))
+        assert hasattr(result_obs, 'avg_wait_north')
+        assert hasattr(result_obs, 'avg_wait_south')
+        assert hasattr(result_obs, 'avg_wait_east')
+        assert hasattr(result_obs, 'avg_wait_west')
+        assert hasattr(result_obs, 'steps_remaining')
+        assert result_obs.steps_remaining == 49  # easy task: 50 - 1 step
 
     def test_traffic_state_roundtrip(self):
         """TrafficState should serialize and deserialize losslessly."""
@@ -449,3 +473,32 @@ class TestConstructor:
         meta = env.get_metadata()
         assert meta.name == "Traffic Control Environment"
         assert meta.version == "0.1.0"
+
+# =========================================================================
+# 9. Test Inference Fallback
+# =========================================================================
+
+class TestInference:
+    def test_heuristic_policy_returns_valid_action(self):
+        from inference import heuristic_policy
+        from server.environment import TrafficEnvironment
+        env = TrafficEnvironment("easy")
+        obs = env.reset()
+        action = heuristic_policy(obs)
+        assert isinstance(action, TrafficAction)
+        assert action.action in list(SignalCommand)
+    
+    def test_heuristic_policy_prioritizes_emergency(self):
+        from inference import heuristic_policy
+        from server.environment import TrafficEnvironment
+        env = TrafficEnvironment("medium")
+        env.reset()
+        # Manually inject an emergency
+        env.sim.emergency = {"direction": "NORTH", "urgency": "CRITICAL", "steps_waiting": 5}
+        obs = env._build_observation(env.sim._build_state_dict(), done=False)
+        action = heuristic_policy(obs)
+        # Assuming current_phase is already NS_GREEN, it should hold
+        if obs.current_phase == "NS_GREEN":
+            assert action.action == SignalCommand.HOLD_CURRENT_PHASE
+        else:
+            assert action.action == SignalCommand.SET_NS_GREEN
