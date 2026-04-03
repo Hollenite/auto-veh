@@ -38,6 +38,9 @@ dependencies = [
 Homepage = "https://huggingface.co/spaces/Hollenite/auto-veh-v2"
 Repository = "https://github.com/Hollenite/auto-veh"
 
+[project.scripts]
+traffic-control-env = "server.app:main"
+
 [tool.setuptools]
 packages = ["server", "client"]
 

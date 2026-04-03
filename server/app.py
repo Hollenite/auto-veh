@@ -10,13 +10,16 @@ The generated app exposes:
     - GET ``/health``     — Health check endpoint
 
 Usage:
-    uvicorn server.app:app --host 0.0.0.0 --port 8000
+    uvicorn server.app:app --host 0.0.0.0 --port 7860
+    python -m server.app
 """
 
 from __future__ import annotations
 
 import logging
+import sys
 
+import uvicorn
 from fastapi import FastAPI
 from fastapi.responses import JSONResponse
 
@@ -93,3 +96,22 @@ async def on_startup() -> None:
     logger.info("  Tasks: easy, medium, hard")
     logger.info("  Endpoints: /ws (WebSocket), /health (GET)")
     logger.info("=" * 60)
+
+
+# ---------------------------------------------------------------------------
+# Main Entry Point
+# ---------------------------------------------------------------------------
+
+
+def main() -> None:
+    """Main entry point for running the server."""
+    uvicorn.run(
+        "server.app:app",
+        host="0.0.0.0",
+        port=7860,
+        log_level="info",
+    )
+
+
+if __name__ == "__main__":
+    main()
