@@ -30,7 +30,7 @@ from typing import Any, Dict
 
 from openenv.core.env_client import EnvClient, StepResult
 
-from models import TrafficAction, TrafficObservation, TrafficState
+from models import SignalCommand, SignalAction, TrafficAction, TrafficObservation, TrafficState
 
 
 class TrafficEnv(EnvClient[TrafficAction, TrafficObservation, TrafficState]):
@@ -86,7 +86,7 @@ class TrafficEnv(EnvClient[TrafficAction, TrafficObservation, TrafficState]):
             action: The agent's traffic signal control action.
 
         Returns:
-            Dictionary with ``action`` (enum value string) and
+            Dictionary with ``command`` as (enum value string) and
             ``emergency_direction`` (string or None).
         """
         return {
@@ -118,6 +118,8 @@ class TrafficEnv(EnvClient[TrafficAction, TrafficObservation, TrafficState]):
         if "success" in payload and "success" not in obs_data:
             obs_data["success"] = payload["success"]
 
+        # New fields avg_wait_north/south/east/west and steps_remaining are
+        # included automatically if present in server response.
         observation = TrafficObservation(**obs_data)
 
         return StepResult(
