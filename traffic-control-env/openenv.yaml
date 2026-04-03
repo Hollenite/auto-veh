@@ -1,10 +1,16 @@
+spec_version: 1
 name: traffic-control-env
 version: "0.1.0"
+type: space
+runtime: fastapi
+app: server.app:app
+port: 8000
 description: >
-  Autonomous Traffic Control environment for OpenEnv.
-  An AI agent controls a 4-way intersection signal to maximize
-  vehicle throughput and handle emergency vehicle prioritization.
-author: "<your-hf-username>"
+  Autonomous Traffic Control environment. An AI agent controls a 4-way
+  intersection signal to maximize vehicle throughput and handle emergency
+  vehicle prioritization. Features stochastic vehicle arrivals, per-vehicle
+  wait tracking, and 3 tasks of increasing difficulty.
+author: "Hollenite"
 tags:
   - openenv
   - traffic
@@ -13,14 +19,14 @@ tags:
   - real-world
 tasks:
   - id: easy
-    description: Balanced traffic, no emergencies
+    description: Balanced traffic, no emergencies, predictable arrivals
     difficulty: easy
   - id: medium
-    description: Rush hour with emergency vehicles
+    description: Rush hour with asymmetric load and occasional emergencies
     difficulty: medium
   - id: hard
-    description: Traffic surge with multiple emergencies
+    description: Traffic surge with high volume and multiple simultaneous emergencies
     difficulty: hard
 action_space: discrete
 observation_space: structured
-reward_range: [-5.0, 1.5]
+reward_range: [-10.0, 3.0]
