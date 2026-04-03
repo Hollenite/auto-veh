@@ -3,7 +3,7 @@ requires = ["setuptools>=45", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "traffic-control-env"
+name = "traffic_control_env"
 version = "0.1.0"
 description = "Autonomous Traffic Control environment where an AI agent optimizes traffic signal phases at a 4-way intersection"
 requires-python = ">=3.8"
