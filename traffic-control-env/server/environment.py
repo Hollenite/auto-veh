@@ -40,7 +40,7 @@ class TrafficEnvironment(Environment[TrafficAction, TrafficObservation, TrafficS
         emergency vehicle info, cumulative performance metrics.
 
     Action space:
-        ``{KEEP_CURRENT, SWITCH_PHASE, EMERGENCY_OVERRIDE}``
+        ``{SET_NS_GREEN, SET_EW_GREEN, HOLD_CURRENT_PHASE, SET_ALL_RED}``
 
     Reward:
         Per-step signal combining throughput bonus, wait penalty,
@@ -255,6 +255,13 @@ class TrafficEnvironment(Environment[TrafficAction, TrafficObservation, TrafficS
             done=done,
             success=done,
             message=sim_state.get("message", ""),
+            avg_wait_north=sim_state.get("avg_wait", {}).get("NORTH", 0.0),
+            avg_wait_south=sim_state.get("avg_wait", {}).get("SOUTH", 0.0),
+            avg_wait_east=sim_state.get("avg_wait", {}).get("EAST", 0.0),
+            avg_wait_west=sim_state.get("avg_wait", {}).get("WEST", 0.0),
+            steps_remaining=max(
+                self.task_config["max_steps"] - self._state.step_count, 0
+            ),
         )
 
     @property
