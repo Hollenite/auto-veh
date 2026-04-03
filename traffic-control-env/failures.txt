@@ -1,4 +1,0 @@
-FAILED tests/test_environment.py::TestEmergencyOverride::test_emergency_override_positive_reward
-FAILED tests/test_environment.py::TestPhaseSwitch::test_switch_phase_changes_signal
-FAILED tests/test_environment.py::TestPhaseSwitch::test_full_phase_rotation
-FAILED tests/test_environment.py::TestInference::test_heuristic_policy_prioritizes_emergency
