@@ -17,6 +17,7 @@ Classes:
 from __future__ import annotations
 
 import numpy as np
+from models import VehicleRecord, VehicleType, Direction
 
 
 # ---------------------------------------------------------------------------
@@ -79,7 +80,7 @@ class IntersectionSimulation:
         self.task_config = task_config
 
         # --- Mutable state (all reset in reset()) ---
-        self.queues: dict[str, int] = {}
+        self.queues: dict[str, list] = {}
         self.current_phase: str = ""
         self.phase_duration: int = 0
         self.phase_index: int = 0
@@ -107,7 +108,7 @@ class IntersectionSimulation:
         Returns:
             State dictionary compatible with ``TrafficObservation`` fields.
         """
-        self.queues = {d: 0 for d in ALL_DIRECTIONS}
+        self.queues = {d: [] for d in ALL_DIRECTIONS}
         self.current_phase = PHASE_ROTATION[0]  # NS_GREEN
         self.phase_duration = 0
         self.phase_index = 0
@@ -154,20 +155,21 @@ class IntersectionSimulation:
                 emergency_handled = True
 
         # 2. Discharge vehicles on green approaches
-        vehicles_cleared = self._discharge_vehicles()
+        cleared_counts = self._discharge_vehicles()
 
         # 3. Stochastic vehicle arrivals
         self._arrive_vehicles()
+        self._increment_wait_times()
 
         # 4. Emergency vehicle lifecycle
         self._update_emergency()
 
         # 5. Reward computation
-        reward = self._calculate_reward(vehicles_cleared, action, emergency_handled)
+        reward = self._calculate_reward(cleared_counts, action, emergency_handled)
 
         # 6. Bookkeeping
         self.phase_duration += 1
-        self.total_wait_time += sum(self.queues.values())
+        self.total_wait_time += sum(len(q) for q in self.queues.values())
 
         return self._build_state_dict(reward=reward)
 
@@ -176,37 +178,54 @@ class IntersectionSimulation:
     # ------------------------------------------------------------------
 
     def _process_action(self, action: str) -> None:
-        """Update the signal phase based on the agent's action.
-
-        Rules:
-            - ``KEEP_CURRENT``: No phase change.
-            - ``SWITCH_PHASE``: Advance to the next phase in rotation,
-              **unless** the current phase has been active for fewer than
-              ``MIN_PHASE_DURATION`` steps (action is silently ignored).
-            - ``EMERGENCY_OVERRIDE``: Force the phase that gives green to
-              the emergency vehicle's direction. This is always allowed
-              regardless of ``MIN_PHASE_DURATION`` to model the real-world
-              priority of emergency response.
-
-        Args:
-            action: The agent's chosen action string.
+        """Update signal phase based on agent action.
+        
+        Actions:
+            set_ns_green:       Force NS_GREEN immediately.
+            set_ew_green:       Force EW_GREEN immediately.
+            set_all_red:        Force ALL_RED immediately.
+            hold_current_phase: No change.
+        
+        MIN_PHASE_DURATION is enforced for set_ns_green and set_ew_green
+        unless an emergency vehicle is present (emergency always overrides).
         """
-        if action == "keep_current":
+        if action == "hold_current_phase":
             return
 
-        if action == "switch_phase":
-            # Enforce minimum phase duration — prevent signal thrashing
-            if self.phase_duration < MIN_PHASE_DURATION:
-                return
-            self._advance_phase()
+        emergency_active = self.emergency is not None
+        
+        if action == "set_ns_green":
+            if self.current_phase != "NS_GREEN":
+                if self.phase_duration >= MIN_PHASE_DURATION or emergency_active:
+                    self.current_phase = "NS_GREEN"
+                    self.phase_index = PHASE_ROTATION.index("NS_GREEN")
+                    self.phase_duration = 0
+        
+        elif action == "set_ew_green":
+            if self.current_phase != "EW_GREEN":
+                if self.phase_duration >= MIN_PHASE_DURATION or emergency_active:
+                    self.current_phase = "EW_GREEN"
+                    self.phase_index = PHASE_ROTATION.index("EW_GREEN")
+                    self.phase_duration = 0
+        
+        elif action == "set_all_red":
+            if self.current_phase != "ALL_RED":
+                self.current_phase = "ALL_RED"
+                self.phase_index = PHASE_ROTATION.index("ALL_RED")
+                self.phase_duration = 0
 
+        # Legacy support: old action names map to new ones
+        elif action == "keep_current":
+            return
+        elif action == "switch_phase":
+            if self.phase_duration >= MIN_PHASE_DURATION:
+                self._advance_phase()
         elif action == "emergency_override":
             if self.emergency is not None:
-                target_phase = _PHASE_FOR_DIRECTION[self.emergency["direction"]]
-                if self.current_phase != target_phase:
-                    # Jump directly to the target phase
-                    self.phase_index = PHASE_ROTATION.index(target_phase)
-                    self.current_phase = target_phase
+                target = _PHASE_FOR_DIRECTION[self.emergency["direction"]]
+                if self.current_phase != target:
+                    self.phase_index = PHASE_ROTATION.index(target)
+                    self.current_phase = target
                     self.phase_duration = 0
 
     def _advance_phase(self) -> None:
@@ -219,55 +238,73 @@ class IntersectionSimulation:
     # Vehicle Discharge
     # ------------------------------------------------------------------
 
-    def _discharge_vehicles(self) -> int:
-        """Clear vehicles from approaches that currently have a green signal.
-
-        Each green direction can discharge up to ``DISCHARGE_RATE_PER_DIRECTION``
-        vehicles per step. During ``ALL_RED``, no vehicles are discharged.
-
-        Returns:
-            Total number of vehicles cleared this step.
+    def _discharge_vehicles(self) -> dict:
+        """Clear vehicles from approaches with green signal.
+        
+        Emergency vehicles are prioritized in their queue (popped first).
+        Returns dict with keys "normal" and "emergency" counting cleared vehicles.
         """
         green_dirs = _GREEN_DIRECTIONS.get(self.current_phase, [])
-        total_cleared = 0
+        cleared = {"normal": 0, "emergency": 0}
 
         for direction in green_dirs:
-            can_clear = min(self.queues[direction], DISCHARGE_RATE_PER_DIRECTION)
-            self.queues[direction] -= can_clear
-            total_cleared += can_clear
+            queue = self.queues[direction]
+            for _ in range(DISCHARGE_RATE_PER_DIRECTION):
+                if not queue:
+                    break
+                # Prioritize emergency vehicles
+                emerg_idx = next(
+                    (i for i, v in enumerate(queue) if v.vehicle_type == VehicleType.EMERGENCY),
+                    None
+                )
+                if emerg_idx is not None:
+                    vehicle = queue.pop(emerg_idx)
+                else:
+                    vehicle = queue.pop(0)
+                cleared[vehicle.vehicle_type.value] += 1
+                self.total_vehicles_cleared += 1
 
-        self.total_vehicles_cleared += total_cleared
-
-        # If emergency vehicle's direction got green, resolve the emergency
+        # Resolve emergency if its direction got green
         if self.emergency is not None:
             if self.emergency["direction"] in green_dirs:
-                self.emergency = None  # Emergency vehicle has passed through
+                self.emergency = None
 
-        return total_cleared
+        return cleared
 
     # ------------------------------------------------------------------
     # Vehicle Arrivals
     # ------------------------------------------------------------------
 
     def _arrive_vehicles(self) -> None:
-        """Add new vehicles to each approach queue.
-
-        Arrival count per direction =
-            ``max(0, round(arrival_rate + N(0, noise_std)))``
-
-        Queues are capped at ``MAX_QUEUE_SIZE``.
+        """Add new VehicleRecord objects to each approach queue.
+        
+        Arrival count = max(0, round(rate + N(0, noise_std))).
+        Queues are capped at MAX_QUEUE_SIZE.
         """
-        arrival_rates: dict[str, float] = self.task_config["arrival_rates"]
-        noise_std: float = self.task_config["arrival_noise_std"]
+        arrival_rates = self.task_config["arrival_rates"]
+        noise_std = self.task_config["arrival_noise_std"]
 
         for direction in ALL_DIRECTIONS:
             rate = arrival_rates[direction]
             noise = float(self.rng.normal(0, noise_std))
             arrivals = max(0, round(rate + noise))
-            self.queues[direction] = min(
-                self.queues[direction] + arrivals,
-                MAX_QUEUE_SIZE,
-            )
+            
+            for i in range(arrivals):
+                if len(self.queues[direction]) >= MAX_QUEUE_SIZE:
+                    break
+                self.queues[direction].append(VehicleRecord(
+                    vehicle_id=f"{direction}-{self.step_count}-{i}",
+                    direction=Direction(direction),
+                    vehicle_type=VehicleType.NORMAL,
+                    wait_time=0,
+                    arrival_step=self.step_count,
+                ))
+
+    def _increment_wait_times(self) -> None:
+        """Increment wait_time for every vehicle currently in a queue."""
+        for queue in self.queues.values():
+            for vehicle in queue:
+                vehicle.wait_time += 1
 
     # ------------------------------------------------------------------
     # Emergency Vehicle Lifecycle
@@ -333,46 +370,70 @@ class IntersectionSimulation:
     # Reward Calculation
     # ------------------------------------------------------------------
 
-    def _calculate_reward(self, vehicles_cleared: int, action: str, emergency_handled: bool) -> float:
-        """Compute the per-step reward signal.
-
+    def _calculate_reward(
+        self,
+        cleared_counts: dict,
+        action: str,
+        emergency_handled: bool
+    ) -> float:
+        """Compute per-step reward.
+        
         Components:
-            **throughput_reward**: ``+0.1`` per vehicle cleared this step.
-            **wait_penalty**: ``-0.01`` per vehicle currently waiting.
-            **emergency_handling**: Large bonus for correct prioritisation,
-                escalating penalty for delays, severe penalty beyond timeout.
-            **switch_penalty**: ``-0.3`` if the agent attempted to switch
-                phases before ``MIN_PHASE_DURATION`` elapsed.
-
-        Args:
-            vehicles_cleared: Vehicles discharged this step.
-            action: The action string the agent submitted.
-            emergency_handled: True if an emergency vehicle was given green and cleared.
-
-        Returns:
-            Combined reward for this simulation step.
+            throughput:        +1.0 per normal vehicle, +3.0 per emergency vehicle cleared.
+            queue_penalty:     -0.15 per vehicle currently waiting.
+            wait_penalty:      -0.10 * average wait time across all queues.
+            emergency_penalty: Escalating penalty when emergency waits; severe past timeout.
+            switch_penalty:    -0.25 for switching before MIN_PHASE_DURATION.
+            invalid_penalty:   -2.0 for unrecognized action strings.
         """
-        # --- Throughput ---
-        throughput_reward: float = vehicles_cleared * 0.1
+        # Throughput — emergency vehicles worth 3x
+        throughput = (
+            cleared_counts.get("normal", 0) * 1.0
+            + cleared_counts.get("emergency", 0) * 3.0
+        )
 
-        # --- Wait penalty ---
-        wait_penalty: float = -0.01 * sum(self.queues.values())
+        # Queue metrics from VehicleRecord lists
+        all_vehicles = [v for q in self.queues.values() for v in q]
+        total_waiting = len(all_vehicles)
+        avg_wait = (
+            sum(v.wait_time for v in all_vehicles) / total_waiting
+            if total_waiting > 0 else 0.0
+        )
 
-        # --- Emergency handling ---
-        emergency_reward: float = 0.0
+        queue_penalty = total_waiting * 0.15
+        wait_penalty = avg_wait * 0.10
+
+        # Emergency handling
+        emergency_reward = 0.0
         if emergency_handled:
-            emergency_reward = 1.0
+            emergency_reward = 0.0  # Vehicle already cleared — captured in throughput
         elif self.emergency is not None:
-            emergency_reward = -0.2 * self.emergency["steps_waiting"]
-            if self.emergency["steps_waiting"] > EMERGENCY_TIMEOUT:
+            steps_waited = self.emergency["steps_waiting"]
+            urgency_multiplier = {"LOW": 1.0, "HIGH": 1.5, "CRITICAL": 2.0}.get(
+                self.emergency.get("urgency", "LOW"), 1.0
+            )
+            emergency_reward = -0.2 * steps_waited * urgency_multiplier
+            if steps_waited > EMERGENCY_TIMEOUT:
                 emergency_reward -= 5.0
 
-        # --- Switch penalty (thrashing deterrent) ---
-        switch_penalty: float = 0.0
-        if action == "switch_phase" and self.phase_duration < MIN_PHASE_DURATION:
-            switch_penalty = -0.3
+        # Switch penalty — only when switching before min duration
+        switch_penalty = 0.0
+        premature_switch = (
+            action in ("set_ns_green", "set_ew_green", "set_all_red", "switch_phase")
+            and self.phase_duration < MIN_PHASE_DURATION
+            and self.emergency is None  # no penalty when emergency forces switch
+        )
+        if premature_switch:
+            switch_penalty = -0.25
 
-        return throughput_reward + wait_penalty + emergency_reward + switch_penalty
+        # Invalid action penalty
+        valid_actions = {
+            "set_ns_green", "set_ew_green", "hold_current_phase", "set_all_red",
+            "keep_current", "switch_phase", "emergency_override"
+        }
+        invalid_penalty = -2.0 if action not in valid_actions else 0.0
+
+        return throughput - queue_penalty - wait_penalty + emergency_reward - switch_penalty + invalid_penalty
 
     # ------------------------------------------------------------------
     # State Serialisation
@@ -400,8 +461,14 @@ class IntersectionSimulation:
         else:
             message = f"Phase {self.current_phase} active for {self.phase_duration} steps"
 
+        queue_counts = {d: len(q) for d, q in self.queues.items()}
+        avg_waits = {}
+        for d, q in self.queues.items():
+            avg_waits[d] = (sum(v.wait_time for v in q) / len(q)) if q else 0.0
+
         return {
-            "queues": dict(self.queues),
+            "queues": queue_counts,
+            "avg_wait": avg_waits,
             "current_phase": self.current_phase,
             "phase_duration": self.phase_duration,
             "emergency_present": emergency_present,
