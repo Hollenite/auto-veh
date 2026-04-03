@@ -34,7 +34,7 @@ from typing import Any
 from dotenv import load_dotenv
 from openai import OpenAI
 
-from models import SignalAction, TrafficAction, TrafficObservation
+from models import SignalCommand, SignalAction, TrafficAction, TrafficObservation
 from client.client import TrafficEnv
 from server.graders import grade_episode
 from server.tasks import ALL_TASKS
@@ -59,31 +59,40 @@ SYSTEM_PROMPT: str = """\
 You are an AI traffic signal controller managing a 4-way intersection.
 Each step you receive:
 - Queue lengths at NORTH, SOUTH, EAST, WEST approaches (integer counts)
+- Average wait time per direction (float, in simulation steps)
 - Current signal phase: NS_GREEN, EW_GREEN, or ALL_RED
-- How many steps the current phase has been active (phase_duration)
+- Steps remaining in this episode
 - Whether an emergency vehicle is present (and from which direction)
 
-Your goal: maximize vehicle throughput and ALWAYS prioritize emergency vehicles.
-An emergency vehicle must get green light as fast as possible.
+Your goal: maximize vehicle throughput, minimize wait times, and ALWAYS
+prioritize emergency vehicles.
 
-Respond with exactly one JSON object, no other text:
-{"action": "<KEEP_CURRENT|SWITCH_PHASE|EMERGENCY_OVERRIDE>", "emergency_direction": "<NORTH|SOUTH|EAST|WEST|null>"}
+Respond with EXACTLY one JSON object, no other text:
+{"action": "<COMMAND>", "emergency_direction": "<NORTH|SOUTH|EAST|WEST|null>"}
 
-Action guide:
-- KEEP_CURRENT: maintain current phase (good when current green direction has heavy traffic)
-- SWITCH_PHASE: rotate to next phase in cycle (NS_GREEN → ALL_RED → EW_GREEN → ALL_RED)
-- EMERGENCY_OVERRIDE: immediately switch to give emergency vehicle direction a green light
-  (you MUST set emergency_direction to the direction with the emergency vehicle)
+Available commands:
+- set_ns_green:       Give green light to NORTH and SOUTH. EAST and WEST stop.
+- set_ew_green:       Give green light to EAST and WEST. NORTH and SOUTH stop.
+- hold_current_phase: Keep the current phase unchanged.
+- set_all_red:        Stop all traffic (use only as transition, not strategy).
 
-Strategy tips:
-- Keep a phase active for at least 2 steps before switching (switching too fast is penalized)
-- Give green to the direction with the longest queues
-- ALWAYS use EMERGENCY_OVERRIDE when an emergency vehicle is present
-- During ALL_RED, switch to the next phase as soon as possible
+Strategy rules:
+1. EMERGENCY RULE (highest priority): If emergency_present=true, immediately
+   set the phase that gives green to emergency_direction:
+   - NORTH or SOUTH emergency → use set_ns_green
+   - EAST or WEST emergency → use set_ew_green
+   Set emergency_direction to the direction shown in the observation.
+2. BALANCE RULE: Switch to the phase serving the direction with longer queues
+   and higher avg_wait. Compare (queue_north+queue_south+avg_wait_north+avg_wait_south)
+   vs (queue_east+queue_west+avg_wait_east+avg_wait_west).
+3. PATIENCE RULE: Don't switch if phase has been active fewer than 2 steps
+   (unless emergency). Switching too fast wastes the transition cycle.
+4. ENDGAME RULE: If steps_remaining < 5, prioritize the direction with the
+   longest queue to maximize final throughput.
 """
 
 # Valid action values for quick lookup
-_VALID_ACTIONS: set[str] = {a.value for a in SignalAction}
+_VALID_ACTIONS: set[str] = {a.value for a in SignalCommand} | {a.value for a in SignalAction}
 
 
 # ---------------------------------------------------------------------------
@@ -145,8 +154,12 @@ def build_user_prompt(obs: TrafficObservation, step: int) -> str:
             f"⚠️  EMERGENCY VEHICLE DETECTED!",
             f"  Direction: {obs.emergency_direction}",
             f"  Urgency: {obs.emergency_urgency}",
-            f"  → You MUST use EMERGENCY_OVERRIDE with emergency_direction=\"{obs.emergency_direction}\"",
         ])
+        if obs.emergency_direction in ("NORTH", "SOUTH"):
+            phase_needed = "set_ns_green"
+        else:
+            phase_needed = "set_ew_green"
+        lines.append(f"  → Use {phase_needed} with emergency_direction=\"{obs.emergency_direction}\"")
     else:
         lines.extend([
             f"",
@@ -160,6 +173,16 @@ def build_user_prompt(obs: TrafficObservation, step: int) -> str:
         f"  Total vehicles cleared: {obs.total_vehicles_cleared}",
         f"  Total wait time: {obs.total_wait_time}",
         f"  Last reward: {obs.reward:.4f}",
+    ])
+
+    lines.extend([
+        f"",
+        f"Average wait times (steps):",
+        f"  NORTH: {obs.avg_wait_north:.1f}",
+        f"  SOUTH: {obs.avg_wait_south:.1f}",
+        f"  EAST:  {obs.avg_wait_east:.1f}",
+        f"  WEST:  {obs.avg_wait_west:.1f}",
+        f"  Steps remaining: {obs.steps_remaining}",
     ])
 
     # Contextual hint
@@ -199,63 +222,45 @@ def build_user_prompt(obs: TrafficObservation, step: int) -> str:
 # ---------------------------------------------------------------------------
 
 def parse_action(response_text: str) -> TrafficAction:
-    """Parse LLM JSON response into a TrafficAction.
-
-    Attempts multiple extraction strategies:
-    1. Direct JSON parse of the full response.
-    2. Regex extraction of a JSON object from surrounding text.
-    3. Fallback to KEEP_CURRENT on any failure.
-
-    Args:
-        response_text: Raw text response from the LLM.
-
-    Returns:
-        Validated ``TrafficAction``. Defaults to ``KEEP_CURRENT`` on error.
-    """
-    fallback = TrafficAction(action=SignalAction.KEEP_CURRENT)
-
+    """Parse LLM JSON response into a TrafficAction."""
+    from models import SignalCommand
+    fallback = TrafficAction(action=SignalCommand.HOLD_CURRENT_PHASE)
+    
     if not response_text or not response_text.strip():
-        logger.warning("Empty LLM response, using fallback KEEP_CURRENT")
+        logger.warning("Empty LLM response, using fallback HOLD_CURRENT_PHASE")
         return fallback
-
+        
     text = response_text.strip()
-
-    # Strategy 1: Direct parse
+    
     parsed = _try_parse_json(text)
-
-    # Strategy 2: Extract JSON from markdown code blocks or surrounding text
     if parsed is None:
+        import re
         json_match = re.search(r"\{[^{}]*\}", text, re.DOTALL)
         if json_match:
             parsed = _try_parse_json(json_match.group())
-
+            
     if parsed is None:
         logger.warning("Failed to parse LLM response: %s", text[:200])
         return fallback
 
-    # Extract and validate action
     action_str = parsed.get("action", "").lower()
-
-    # Normalise common variations
+    
     action_map = {
-        "keep_current": "keep_current",
-        "keepcurrent": "keep_current",
-        "keep": "keep_current",
-        "switch_phase": "switch_phase",
-        "switchphase": "switch_phase",
-        "switch": "switch_phase",
-        "emergency_override": "emergency_override",
-        "emergencyoverride": "emergency_override",
-        "emergency": "emergency_override",
-        "override": "emergency_override",
+        "ns_green": "set_ns_green",
+        "ns": "set_ns_green",
+        "ew_green": "set_ew_green",
+        "ew": "set_ew_green",
+        "hold": "hold_current_phase",
+        "keep": "hold_current_phase",
+        "keep_current": "hold_current_phase",
+        "all_red": "set_all_red",
+        "red": "set_all_red",
+        "set_ns_green": "set_ns_green",
+        "set_ew_green": "set_ew_green",
+        "hold_current_phase": "hold_current_phase",
+        "set_all_red": "set_all_red",
     }
-
-    normalised = action_map.get(action_str, action_str)
-    if normalised not in _VALID_ACTIONS:
-        logger.warning("Invalid action '%s', using KEEP_CURRENT", action_str)
-        return fallback
-
-    # Extract emergency direction
+    
     emergency_dir = parsed.get("emergency_direction")
     if isinstance(emergency_dir, str):
         emergency_dir = emergency_dir.upper()
@@ -263,9 +268,23 @@ def parse_action(response_text: str) -> TrafficAction:
             emergency_dir = None
         elif emergency_dir not in {"NORTH", "SOUTH", "EAST", "WEST"}:
             emergency_dir = None
-
+            
+    if action_str in ("emergency_override", "emergencyoverride", "emergency", "override"):
+        if emergency_dir in ("NORTH", "SOUTH"):
+            action_str = "set_ns_green"
+        elif emergency_dir in ("EAST", "WEST"):
+            action_str = "set_ew_green"
+        else:
+            action_str = "hold_current_phase"
+            
+    normalised = action_map.get(action_str, action_str)
+    
+    if normalised not in _VALID_ACTIONS:
+        logger.warning("Invalid action '%s', using HOLD_CURRENT_PHASE", action_str)
+        return fallback
+        
     return TrafficAction(
-        action=SignalAction(normalised),
+        action=SignalCommand(normalised),
         emergency_direction=emergency_dir,
     )
 
@@ -285,9 +304,60 @@ def _try_parse_json(text: str) -> dict[str, Any] | None:
 # Task Runner
 # ---------------------------------------------------------------------------
 
+def heuristic_policy(obs: TrafficObservation) -> TrafficAction:
+    """Deterministic heuristic agent — used as fallback when no LLM is available.
+    
+    Strategy:
+        1. Emergency vehicles get immediate priority.
+        2. Otherwise serve the direction with highest combined queue + avg_wait pressure.
+        3. Hold current phase if it's already optimal and recently switched.
+    """
+    from models import SignalCommand
+    
+    # Emergency priority
+    if obs.emergency_present and obs.emergency_direction:
+        if obs.emergency_direction in ("NORTH", "SOUTH"):
+            if obs.current_phase == "NS_GREEN":
+                return TrafficAction(action=SignalCommand.HOLD_CURRENT_PHASE)
+            return TrafficAction(
+                action=SignalCommand.SET_NS_GREEN,
+                emergency_direction=obs.emergency_direction
+            )
+        else:
+            if obs.current_phase == "EW_GREEN":
+                return TrafficAction(action=SignalCommand.HOLD_CURRENT_PHASE)
+            return TrafficAction(
+                action=SignalCommand.SET_EW_GREEN,
+                emergency_direction=obs.emergency_direction
+            )
+    
+    # Pressure-based decision
+    ns_pressure = (
+        obs.queue_north + obs.queue_south
+        + obs.avg_wait_north + obs.avg_wait_south
+    )
+    ew_pressure = (
+        obs.queue_east + obs.queue_west
+        + obs.avg_wait_east + obs.avg_wait_west
+    )
+    
+    # Hold if phase was recently set (avoid thrashing)
+    if obs.phase_duration < 2:
+        return TrafficAction(action=SignalCommand.HOLD_CURRENT_PHASE)
+    
+    if ns_pressure >= ew_pressure:
+        if obs.current_phase == "NS_GREEN":
+            return TrafficAction(action=SignalCommand.HOLD_CURRENT_PHASE)
+        return TrafficAction(action=SignalCommand.SET_NS_GREEN)
+    else:
+        if obs.current_phase == "EW_GREEN":
+            return TrafficAction(action=SignalCommand.HOLD_CURRENT_PHASE)
+        return TrafficAction(action=SignalCommand.SET_EW_GREEN)
+
+
 def run_task(
     task_id: str,
-    llm_client: OpenAI,
+    llm_client: OpenAI | None,
     model: str,
     env_url: str,
 ) -> tuple[float, list[dict]]:
@@ -326,32 +396,28 @@ def run_task(
         obs = result.observation
 
         for step in range(1, max_steps + 1):
-            # Build the prompt from the current observation
-            user_prompt = build_user_prompt(obs, step)
-            conversation.append({"role": "user", "content": user_prompt})
-
-            # Call the LLM
-            try:
-                response = llm_client.chat.completions.create(
-                    model=model,
-                    messages=conversation,
-                    temperature=0.1,
-                    max_tokens=100,
-                )
-                llm_text = response.choices[0].message.content or ""
-            except Exception as e:
-                logger.warning("LLM call failed at step %d: %s", step, e)
-                llm_text = ""
-
-            # Parse the action
-            action = parse_action(llm_text)
-
-            # Add assistant response to conversation for context continuity
-            conversation.append({"role": "assistant", "content": llm_text})
-
-            # Keep conversation history manageable (last 10 exchanges + system)
-            if len(conversation) > 21:
-                conversation = [conversation[0]] + conversation[-20:]
+            if llm_client is not None:
+                # LLM path
+                user_prompt = build_user_prompt(obs, step)
+                conversation.append({"role": "user", "content": user_prompt})
+                try:
+                    response = llm_client.chat.completions.create(
+                        model=model,
+                        messages=conversation,
+                        temperature=0.1,
+                        max_tokens=100,
+                    )
+                    llm_text = response.choices[0].message.content or ""
+                except Exception as e:
+                    logger.warning("LLM call failed at step %d: %s", step, e)
+                    llm_text = ""
+                action = parse_action(llm_text)
+                conversation.append({"role": "assistant", "content": llm_text})
+                if len(conversation) > 21:
+                    conversation = [conversation[0]] + conversation[-20:]
+            else:
+                # Heuristic fallback path
+                action = heuristic_policy(obs)
 
             # Execute action in the environment via HTTP client
             result = client_env.step(action)
@@ -422,28 +488,25 @@ def main() -> None:
     if not api_key:
         missing.append("OPENAI_API_KEY (or HF_TOKEN)")
 
+    use_heuristic = bool(missing)
     if missing:
-        logger.error(
-            "Missing required environment variables: %s",
+        logger.warning(
+            "Missing env vars: %s. Falling back to heuristic policy.",
             ", ".join(missing),
         )
-        print(f"\nError: Set these environment variables: {', '.join(missing)}")
-        print("Example:")
-        print('  export API_BASE_URL="https://api.openai.com/v1"')
-        print('  export MODEL_NAME="gpt-4o-mini"')
-        print('  export OPENAI_API_KEY="sk-..."')
-        sys.exit(1)
+        print(f"\nWarning: {', '.join(missing)} not set. Using heuristic baseline.")
+        client = None
+    else:
+        print(f"\nAPI Base:  {api_base_url}")
+        print(f"Model:     {model_name}")
+        print(f"API Key:   {api_key[:8]}...{api_key[-4:]}")
+        print()
 
-    print(f"\nAPI Base:  {api_base_url}")
-    print(f"Model:     {model_name}")
-    print(f"API Key:   {api_key[:8]}...{api_key[-4:]}")
-    print()
-
-    # --- Create OpenAI client ---
-    client = OpenAI(
-        base_url=api_base_url,
-        api_key=api_key,
-    )
+        # --- Create OpenAI client ---
+        client = OpenAI(
+            base_url=api_base_url,
+            api_key=api_key,
+        )
 
     # --- Run all 3 tasks ---
     task_ids = ["easy", "medium", "hard"]
@@ -460,7 +523,7 @@ def main() -> None:
             score, history = run_task(
                 task_id=task_id,
                 llm_client=client,
-                model=model_name,
+                model=model_name or "heuristic",
                 env_url=env_url,
             )
             scores[task_id] = score
