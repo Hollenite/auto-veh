@@ -3,18 +3,46 @@ requires = ["setuptools>=45", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "traffic_control_env"
+name = "traffic-control-env"
 version = "0.1.0"
-description = "Autonomous traffic control environment for OpenEnv"
-requires-python = ">=3.12"
-dependencies = [
-    "openenv-core[core]>=0.2.2",
-    "fastapi>=0.115.0",
-    "openai>=1.0.0",
-    "pydantic>=2.0.0",
-    "requests>=2.31.0",
-    "uvicorn>=0.24.0",
+description = "Autonomous Traffic Control environment where an AI agent optimizes traffic signal phases at a 4-way intersection"
+readme = "README.md"
+requires-python = ">=3.8"
+license = {text = "MIT"}
+authors = [
+    {name = "Hollenite", email = ""}
 ]
+keywords = ["openenv", "traffic", "reinforcement-learning", "simulation"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.8",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "License :: OSI Approved :: MIT License",
+]
+dependencies = [
+    "openenv-core>=0.2.1",
+    "fastapi>=0.110.0",
+    "uvicorn>=0.29.0",
+    "pydantic>=2.0.0",
+    "numpy>=1.26.0",
+    "openai>=1.30.0",
+    "python-dotenv>=1.0.0",
+    "websockets>=12.0",
+    "httpx>=0.27.0",
+]
+
+[project.urls]
+Homepage = "https://huggingface.co/spaces/Hollenite/traffic-control-env"
+Repository = "https://github.com/Hollenite/traffic-control-env"
 
 [tool.setuptools]
 packages = ["server", "client"]
+
+[tool.setuptools.package-data]
+server = ["*.py"]
+client = ["*.py"]
