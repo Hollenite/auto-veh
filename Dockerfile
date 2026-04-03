@@ -3,11 +3,9 @@ FROM ${BASE_IMAGE}
 
 WORKDIR /app
 
-COPY pyproject.toml .
-COPY requirements.txt .
-RUN pip install --no-cache-dir -e .
-
 COPY . .
+
+RUN pip install --no-cache-dir -e .
 
 ENV PYTHONPATH="/app:${PYTHONPATH}"
 ENV ENABLE_WEB_INTERFACE=true

@@ -6,7 +6,6 @@ build-backend = "setuptools.build_meta"
 name = "traffic-control-env"
 version = "0.1.0"
 description = "Autonomous Traffic Control environment where an AI agent optimizes traffic signal phases at a 4-way intersection"
-readme = "README.md"
 requires-python = ">=3.8"
 license = {text = "MIT"}
 authors = [
@@ -22,7 +21,6 @@ classifiers = [
     "Programming Language :: Python :: 3.10",
     "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
-    "License :: OSI Approved :: MIT License",
 ]
 dependencies = [
     "openenv-core>=0.2.1",
