@@ -6,24 +6,16 @@ from typing import Optional
 
 from openai import OpenAI
 
-try:
-    from traffic_control_env.models import (
-        TaskId,
-        TrafficCommand,
-        TrafficControlAction,
-        TrafficControlObservation,
-    )
-    from traffic_control_env.server import TrafficControlEnvironment
-except ModuleNotFoundError:
-    from models import TaskId, TrafficCommand, TrafficControlAction, TrafficControlObservation
-    from server import TrafficControlEnvironment
+from models import SignalCommand, TrafficAction, TrafficObservation
+from client.client import TrafficEnv
+from server.tasks import ALL_TASKS
 
-API_BASE_URL = os.getenv("API_BASE_URL", "https://router.huggingface.co/v1")
-MODEL_NAME = os.getenv("MODEL_NAME", "openai/gpt-4.1-mini")
+API_BASE_URL = os.getenv("API_BASE_URL", "https://api.openai.com/v1")
+MODEL_NAME = os.getenv("MODEL_NAME", "gpt-4.1-mini")
 HF_TOKEN = os.getenv("HF_TOKEN")
 TASK_ID_FILTER = os.getenv("TASK_ID")
 MAX_EXTRA_STEPS = 5
-ENV_NAME = "traffic_control_env"
+ENV_NAME = "traffic-control-env"
 
 if HF_TOKEN is None:
     raise ValueError("HF_TOKEN environment variable is required")
@@ -37,17 +29,17 @@ class EpisodeResult:
     rewards: list[float]
 
 
-def heuristic_policy(observation: TrafficControlObservation) -> TrafficCommand:
-    if observation.emergency_direction is not None:
-        direction = observation.emergency_direction.value
-        if direction in ("north", "south"):
-            if observation.current_phase.value == "ns_green":
-                return TrafficCommand.HOLD_CURRENT_PHASE
-            return TrafficCommand.SET_NS_GREEN
-        if direction in ("east", "west"):
-            if observation.current_phase.value == "ew_green":
-                return TrafficCommand.HOLD_CURRENT_PHASE
-            return TrafficCommand.SET_EW_GREEN
+def heuristic_policy(observation: TrafficObservation) -> SignalCommand:
+    if observation.emergency_present and observation.emergency_direction:
+        direction = observation.emergency_direction
+        if direction in ("NORTH", "SOUTH"):
+            if observation.current_phase == "NS_GREEN":
+                return SignalCommand.HOLD_CURRENT_PHASE
+            return SignalCommand.SET_NS_GREEN
+        if direction in ("EAST", "WEST"):
+            if observation.current_phase == "EW_GREEN":
+                return SignalCommand.HOLD_CURRENT_PHASE
+            return SignalCommand.SET_EW_GREEN
 
     ns_pressure = (
         observation.queue_north
@@ -64,19 +56,19 @@ def heuristic_policy(observation: TrafficControlObservation) -> TrafficCommand:
 
     if ns_pressure >= ew_pressure:
         return (
-            TrafficCommand.HOLD_CURRENT_PHASE
-            if observation.current_phase.value == "ns_green"
-            else TrafficCommand.SET_NS_GREEN
+            SignalCommand.HOLD_CURRENT_PHASE
+            if observation.current_phase == "NS_GREEN"
+            else SignalCommand.SET_NS_GREEN
         )
 
     return (
-        TrafficCommand.HOLD_CURRENT_PHASE
-        if observation.current_phase.value == "ew_green"
-        else TrafficCommand.SET_EW_GREEN
+        SignalCommand.HOLD_CURRENT_PHASE
+        if observation.current_phase == "EW_GREEN"
+        else SignalCommand.SET_EW_GREEN
     )
 
 
-def llm_policy(observation: TrafficControlObservation) -> Optional[TrafficCommand]:
+def llm_policy(observation: TrafficObservation) -> Optional[SignalCommand]:
     if HF_TOKEN is None or HF_TOKEN.strip().lower() in {"dummy", "test", "local"}:
         return None
 
@@ -97,8 +89,7 @@ Choose exactly one action from:
 - set_all_red
 
 State:
-- current_phase: {observation.current_phase.value}
-- current_timestep: {observation.current_timestep}
+- current_phase: {observation.current_phase}
 - queue_north: {observation.queue_north}
 - queue_south: {observation.queue_south}
 - queue_east: {observation.queue_east}
@@ -108,28 +99,29 @@ State:
 - avg_wait_east: {observation.avg_wait_east:.2f}
 - avg_wait_west: {observation.avg_wait_west:.2f}
 - emergency_present: {str(observation.emergency_present).lower()}
-- emergency_direction: {observation.emergency_direction.value if observation.emergency_direction else "none"}
-- time_since_last_phase_change: {observation.time_since_last_phase_change}
+- emergency_direction: {observation.emergency_direction if observation.emergency_direction else "none"}
 
 Reply with only the action string.
 """.strip()
 
     try:
-        response = client.responses.create(
+        response = client.chat.completions.create(
             model=MODEL_NAME,
-            input=prompt,
+            messages=[{"role": "user", "content": prompt}],
+            temperature=0.1,
+            max_tokens=50,
         )
-        text = getattr(response, "output_text", "").strip().lower()
+        text = (response.choices[0].message.content or "").strip().lower()
         if not text:
             return None
         command_text = text.splitlines()[0].strip()
-        allowed = {command.value: command for command in TrafficCommand}
+        allowed = {command.value: command for command in SignalCommand}
         return allowed.get(command_text)
     except Exception:
         return None
 
 
-def choose_action(observation: TrafficControlObservation) -> TrafficCommand:
+def choose_action(observation: TrafficObservation) -> SignalCommand:
     llm_choice = llm_policy(observation)
     if llm_choice is not None:
         return llm_choice
@@ -148,47 +140,53 @@ def format_rewards(values: list[float]) -> str:
     return ",".join(format_reward(value) for value in values)
 
 
-def run_episode(task_id: TaskId) -> EpisodeResult:
-    env = TrafficControlEnvironment()
+def run_episode(task_id: str) -> EpisodeResult:
+    env_url = os.environ.get("HF_SPACE_URL", "http://localhost:8000")
+    env = TrafficEnv(base_url=env_url, task_id=task_id)
+    
     rewards: list[float] = []
     success = False
     step_count = 0
 
-    print(f"[START] task={task_id.value} env={ENV_NAME} model={MODEL_NAME}")
+    print(f"[START] task={task_id} env={ENV_NAME} model={MODEL_NAME}")
 
     try:
-        observation = env.reset(task_id=task_id.value)
-        safety_limit = env._task.horizon_steps + MAX_EXTRA_STEPS
+        with env.sync() as client_env:
+            result = client_env.reset()
+            observation = result.observation
+            
+            task_config = ALL_TASKS[task_id]
+            max_steps = task_config["max_steps"]
+            safety_limit = max_steps + MAX_EXTRA_STEPS
 
-        while not observation.done and env.state.step_count < safety_limit:
-            command = choose_action(observation)
-            action_text = command.value
-            error_text = "null"
+            while not observation.done and step_count < safety_limit:
+                command = choose_action(observation)
+                action_text = command.value
+                error_text = "null"
 
-            try:
-                observation = env.step(TrafficControlAction(command=command))
-                reward = float(observation.reward or 0.0)
-            except Exception as exc:
-                reward = 0.0
-                observation = TrafficControlObservation(
-                    reward=reward,
-                    done=True,
-                    status_message=str(exc),
+                try:
+                    result = client_env.step(TrafficAction(action=command))
+                    observation = result.observation
+                    reward = float(observation.reward or 0.0)
+                except Exception as exc:
+                    reward = 0.0
+                    error_text = str(exc)
+                    observation.done = True
+
+                step_count += 1
+                rewards.append(reward)
+
+                print(
+                    f"[STEP] step={step_count} action={action_text} "
+                    f"reward={format_reward(reward)} done={format_bool(observation.done)} "
+                    f"error={error_text}"
                 )
-                error_text = str(exc)
 
-            step_count += 1
-            rewards.append(reward)
-
-            print(
-                f"[STEP] step={step_count} action={action_text} "
-                f"reward={format_reward(reward)} done={format_bool(observation.done)} "
-                f"error={error_text}"
-            )
-
-        success = bool(env.state.final_score is not None and env.state.final_score > 0.0)
+        threshold = task_config.get("success_threshold", 0.0)
+        success = (observation.reward is not None and observation.reward > threshold) if hasattr(observation, 'reward') else False
+        
         return EpisodeResult(
-            task_id=task_id.value,
+            task_id=task_id,
             success=success,
             steps=step_count,
             rewards=rewards,
@@ -201,7 +199,7 @@ def run_episode(task_id: TaskId) -> EpisodeResult:
 
 
 def main() -> None:
-    task_ids = [TaskId(TASK_ID_FILTER)] if TASK_ID_FILTER else list(TaskId)
+    task_ids = [TASK_ID_FILTER] if TASK_ID_FILTER else ["easy", "medium", "hard"]
     for task_id in task_ids:
         run_episode(task_id)
 
