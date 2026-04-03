@@ -10,7 +10,7 @@ readme = "README.md"
 requires-python = ">=3.8"
 license = {text = "MIT"}
 authors = [
-    {name = "Hollenite", email = ""}
+    {name = "Ariyan"}
 ]
 keywords = ["openenv", "traffic", "reinforcement-learning", "simulation"]
 classifiers = [
