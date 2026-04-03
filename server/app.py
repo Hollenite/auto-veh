@@ -16,7 +16,6 @@ Usage:
 from __future__ import annotations
 
 import logging
-from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
 from fastapi.responses import JSONResponse
@@ -40,29 +39,6 @@ logging.basicConfig(
 # Startup Logic
 # ---------------------------------------------------------------------------
 
-async def _startup_log() -> None:
-    """Log environment info when the server starts."""
-    env = TrafficEnvironment(task_id="easy")
-    meta = env.get_metadata()
-    logger.info("=" * 60)
-    logger.info("  %s v%s", meta.name, meta.version)
-    logger.info("  %s", meta.description)
-    logger.info("  Tasks: easy, medium, hard")
-    logger.info("  Endpoints: /ws (WebSocket), /health (GET)")
-    logger.info("=" * 60)
-
-
-@asynccontextmanager
-async def lifespan(app: FastAPI):
-    """Manage app lifespan."""
-    await _startup_log()
-    yield
-
-
-# ---------------------------------------------------------------------------
-# App Factory
-# ---------------------------------------------------------------------------
-
 
 def _create_environment() -> TrafficEnvironment:
     """Factory function for creating TrafficEnvironment instances.
@@ -80,7 +56,6 @@ app: FastAPI = create_app(
     action_cls=TrafficAction,
     observation_cls=TrafficObservation,
     env_name="traffic-control-env",
-    lifespan=lifespan,
 )
 
 
@@ -101,3 +76,20 @@ async def health_check() -> JSONResponse:
             "environment": "traffic-control-env",
         }
     )
+
+
+# ---------------------------------------------------------------------------
+# Startup Event
+# ---------------------------------------------------------------------------
+
+@app.on_event("startup")
+async def on_startup() -> None:
+    """Log environment info when the server starts."""
+    env = TrafficEnvironment(task_id="easy")
+    meta = env.get_metadata()
+    logger.info("=" * 60)
+    logger.info("  %s v%s", meta.name, meta.version)
+    logger.info("  %s", meta.description)
+    logger.info("  Tasks: easy, medium, hard")
+    logger.info("  Endpoints: /ws (WebSocket), /health (GET)")
+    logger.info("=" * 60)
