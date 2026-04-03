@@ -16,10 +16,5 @@ dependencies = [
     "uvicorn>=0.24.0",
 ]
 
-[project.scripts]
-server = "traffic_control_env.server.app:main"
-
 [tool.setuptools]
-include-package-data = true
-packages = ["traffic_control_env", "traffic_control_env.server"]
-package-dir = { "traffic_control_env" = ".", "traffic_control_env.server" = "server" }
+packages = ["server", "client"]
