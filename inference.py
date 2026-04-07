@@ -13,8 +13,9 @@ from server.tasks import ALL_TASKS
 
 API_BASE_URL = os.getenv("API_BASE_URL", "https://api.openai.com/v1")
 MODEL_NAME = os.getenv("MODEL_NAME", "gpt-4.1-mini")
-HF_TOKEN = os.getenv("HF_TOKEN")
-LOCAL_IMAGE_NAME = os.getenv("LOCAL_IMAGE_NAME")
+API_KEY = os.getenv("API_KEY")
+HF_TOKEN = os.getenv("HF_TOKEN")  # fallback for local testing
+LOCAL_IMAGE_NAME = os.getenv("LOCAL_IMAGE_NAME", "traffic-control-env")
 TASK_ID_FILTER = os.getenv("TASK_ID")
 MAX_EXTRA_STEPS = 5
 ENV_NAME = "traffic-control-env"
@@ -70,15 +71,23 @@ def heuristic_policy(observation: TrafficObservation) -> SignalCommand:
 
 
 def llm_policy(observation: TrafficObservation) -> Optional[SignalCommand]:
-    if HF_TOKEN is None or HF_TOKEN.strip().lower() in {"dummy", "test", "local"}:
-        return None
-
+    # Always use API_KEY from validator when available (they inject it)
+    # Fall back to HF_TOKEN only for local testing
+    api_key = API_KEY if API_KEY else HF_TOKEN
+    
+    # Skip only if explicitly in test/dummy mode
+    if not api_key:
+        print(f"[DEBUG] No API credentials (API_KEY={API_KEY}, HF_TOKEN={HF_TOKEN})", flush=True)
+        # Don't return None - still try with empty string to allow validator injection
+    
     try:
+        print(f"[DEBUG] Attempting LLM call with base_url={API_BASE_URL[:50]}", flush=True)
         client = OpenAI(
             base_url=API_BASE_URL,
-            api_key=HF_TOKEN,
+            api_key=api_key or "",  # Use whatever we have, even if empty
         )
-    except Exception:
+    except Exception as e:
+        print(f"[DEBUG] Failed to create OpenAI client: {e}", flush=True)
         return None
 
     prompt = f"""
@@ -234,10 +243,13 @@ async def run_episode(task_id: str) -> EpisodeResult:
 
 async def main() -> None:
     try:
-        if HF_TOKEN is None:
-            print("[DEBUG] HF_TOKEN not set — LLM policy disabled, falling back to heuristic.", flush=True)
-        if LOCAL_IMAGE_NAME is None:
-            raise RuntimeError("LOCAL_IMAGE_NAME environment variable is required but was not set.")
+        api_key = API_KEY or HF_TOKEN
+        print(f"[DEBUG] API_KEY set: {bool(API_KEY)}", flush=True)
+        print(f"[DEBUG] HF_TOKEN set: {bool(HF_TOKEN)}", flush=True)
+        print(f"[DEBUG] API_BASE_URL: {API_BASE_URL}", flush=True)
+        if api_key is None:
+            print("[DEBUG] No API key available — LLM policy disabled, falling back to heuristic.", flush=True)
+        print(f"[DEBUG] Using LOCAL_IMAGE_NAME: {LOCAL_IMAGE_NAME}", flush=True)
         task_ids = [TASK_ID_FILTER] if TASK_ID_FILTER else ["easy", "medium", "hard"]
         for task_id in task_ids:
             try:
