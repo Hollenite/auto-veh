@@ -47,7 +47,7 @@ def _compute_throughput_score(episode_history: list[dict], max_possible: int) ->
         Throughput score in [0.0, 1.0].
     """
     if not episode_history:
-        return 0.0
+        return _EPSILON
     total_cleared = episode_history[-1]["total_vehicles_cleared"]
     return _clamp(total_cleared / max_possible)
 
