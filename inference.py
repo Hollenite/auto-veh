@@ -154,8 +154,8 @@ async def run_episode(task_id: str) -> EpisodeResult:
     try:
         print(f"[START] task={task_id} env={ENV_NAME} model={MODEL_NAME}", flush=True)
 
-        env = await TrafficEnv.from_docker_image(LOCAL_IMAGE_NAME, task_id=task_id)
-        result = await env.reset()
+        env = await TrafficEnv.from_docker_image(LOCAL_IMAGE_NAME)
+        result = await env.reset(task_id=task_id)
         observation = result.observation
 
         task_config = ALL_TASKS[task_id]
@@ -214,6 +214,8 @@ async def run_episode(task_id: str) -> EpisodeResult:
 async def main() -> None:
     if HF_TOKEN is None:
         print("[DEBUG] HF_TOKEN not set — LLM policy disabled, falling back to heuristic.", flush=True)
+    if LOCAL_IMAGE_NAME is None:
+        raise RuntimeError("LOCAL_IMAGE_NAME environment variable is required but was not set.")
     task_ids = [TASK_ID_FILTER] if TASK_ID_FILTER else ["easy", "medium", "hard"]
     for task_id in task_ids:
         await run_episode(task_id)

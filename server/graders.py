@@ -28,9 +28,11 @@ from server.simulation import EMERGENCY_TIMEOUT, MAX_QUEUE_SIZE
 # Helpers
 # ---------------------------------------------------------------------------
 
+_EPSILON = 1e-6
+
 def _clamp(value: float) -> float:
-    """Clamp a value to the [0.0, 1.0] range."""
-    return max(0.0, min(1.0, value))
+    """Clamp a value to the open interval (0.0, 1.0) — boundaries excluded."""
+    return max(_EPSILON, min(1.0 - _EPSILON, value))
 
 
 def _compute_throughput_score(episode_history: list[dict], max_possible: int) -> float:
@@ -67,7 +69,7 @@ def _compute_emergency_score(episode_history: list[dict]) -> float:
         Emergency response score in [0.0, 1.0].
     """
     if not episode_history:
-        return 1.0
+        return 1.0 - _EPSILON
 
     # Track emergency waiting durations by detecting transitions.
     # An emergency "event" starts when emergency_present goes from
@@ -93,7 +95,7 @@ def _compute_emergency_score(episode_history: list[dict]) -> float:
         emergency_wait_durations.append(current_wait)
 
     if not emergency_wait_durations:
-        return 1.0
+        return 1.0 - _EPSILON
 
     # Score each emergency event
     scores = [
@@ -118,7 +120,7 @@ def _compute_queue_balance_score(episode_history: list[dict]) -> float:
         Queue balance score in [0.0, 1.0].
     """
     if not episode_history:
-        return 1.0
+        return 1.0 - _EPSILON
 
     final_queues = episode_history[-1]["queues"]
     queue_values = list(final_queues.values())
@@ -136,7 +138,7 @@ def _compute_wait_score(episode_history: list[dict]) -> float:
         Wait quality score in [0.0, 1.0].
     """
     if not episode_history:
-        return 1.0
+        return 1.0 - _EPSILON
     # Use total_wait_time from last step divided by steps to get avg
     last = episode_history[-1]
     steps = len(episode_history)
@@ -154,7 +156,7 @@ def _compute_stability_score(episode_history: list[dict]) -> float:
         Stability score in [0.0, 1.0].
     """
     if not episode_history:
-        return 1.0
+        return 1.0 - _EPSILON
     # Count phase changes by detecting when current_phase changes between steps
     switches = 0
     for i in range(1, len(episode_history)):
@@ -174,7 +176,7 @@ def _compute_fairness_score(episode_history: list[dict]) -> float:
         Fairness score in [0.0, 1.0]. 1.0 = perfectly fair.
     """
     if not episode_history:
-        return 1.0
+        return 1.0 - _EPSILON
 
     last = episode_history[-1]
 
@@ -186,7 +188,7 @@ def _compute_fairness_score(episode_history: list[dict]) -> float:
     ]
 
     if not any(values) or max(values) == 0:
-        return 1.0
+        return 1.0 - _EPSILON
 
     return _clamp(1.0 - (max(values) - min(values)) / max(max(values), 1.0))
 
