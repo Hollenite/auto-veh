@@ -151,20 +151,29 @@ async def run_episode(task_id: str) -> EpisodeResult:
     _EPSILON = 1e-6
     score = _EPSILON
     env = None
+    observation = None
     
-
     try:
         print(f"[START] task={task_id} env={ENV_NAME} model={MODEL_NAME}", flush=True)
 
-        env = await TrafficEnv.from_docker_image(LOCAL_IMAGE_NAME)
-        result = await env.reset(task_id=task_id)
-        observation = result.observation
+        try:
+            env = await TrafficEnv.from_docker_image(LOCAL_IMAGE_NAME)
+        except Exception as e:
+            print(f"[ERROR] Failed to create environment: {e}", flush=True)
+            raise
+
+        try:
+            result = await env.reset(task_id=task_id)
+            observation = result.observation
+        except Exception as e:
+            print(f"[ERROR] Failed to reset environment: {e}", flush=True)
+            raise
 
         task_config = ALL_TASKS[task_id]
         max_steps = task_config["max_steps"]
         safety_limit = max_steps + MAX_EXTRA_STEPS
 
-        while not observation.done and step_count < safety_limit:
+        while observation and not observation.done and step_count < safety_limit:
             command = choose_action(observation)
             action_text = command.value
             error_text = "null"
@@ -176,14 +185,15 @@ async def run_episode(task_id: str) -> EpisodeResult:
             except Exception as exc:
                 reward = 0.0
                 error_text = str(exc)
-                observation.done = True
+                if observation:
+                    observation.done = True
 
             step_count += 1
             rewards.append(reward)
 
             print(
                 f"[STEP] step={step_count} action={action_text} "
-                f"reward={format_reward(reward)} done={format_bool(observation.done)} "
+                f"reward={format_reward(reward)} done={format_bool(observation.done if observation else True)} "
                 f"error={error_text}",
                 flush=True,
             )
@@ -191,12 +201,21 @@ async def run_episode(task_id: str) -> EpisodeResult:
         max_total_reward = task_config["max_steps"] * MAX_REWARD_PER_STEP
         score = min(1.0 - _EPSILON, max(_EPSILON, sum(rewards) / max_total_reward)) if max_total_reward > 0 else _EPSILON
 
-        threshold = task_config.get("success_threshold", 0.0)
-        success = (observation.reward is not None and observation.reward > threshold) if hasattr(observation, 'reward') else False
+        success = (observation.reward is not None and observation.reward > task_config.get("success_threshold", 0.0)) if observation else False
 
         return EpisodeResult(
             task_id=task_id,
             success=success,
+            steps=step_count,
+            rewards=rewards,
+        )
+    except Exception as e:
+        print(f"[ERROR] Episode execution failed: {e}", flush=True)
+        import traceback
+        traceback.print_exc()
+        return EpisodeResult(
+            task_id=task_id,
+            success=False,
             steps=step_count,
             rewards=rewards,
         )
@@ -214,14 +233,31 @@ async def run_episode(task_id: str) -> EpisodeResult:
 
 
 async def main() -> None:
-    if HF_TOKEN is None:
-        print("[DEBUG] HF_TOKEN not set — LLM policy disabled, falling back to heuristic.", flush=True)
-    if LOCAL_IMAGE_NAME is None:
-        raise RuntimeError("LOCAL_IMAGE_NAME environment variable is required but was not set.")
-    task_ids = [TASK_ID_FILTER] if TASK_ID_FILTER else ["easy", "medium", "hard"]
-    for task_id in task_ids:
-        await run_episode(task_id)
+    try:
+        if HF_TOKEN is None:
+            print("[DEBUG] HF_TOKEN not set — LLM policy disabled, falling back to heuristic.", flush=True)
+        if LOCAL_IMAGE_NAME is None:
+            raise RuntimeError("LOCAL_IMAGE_NAME environment variable is required but was not set.")
+        task_ids = [TASK_ID_FILTER] if TASK_ID_FILTER else ["easy", "medium", "hard"]
+        for task_id in task_ids:
+            try:
+                await run_episode(task_id)
+            except Exception as e:
+                print(f"[ERROR] Episode failed for task {task_id}: {e}", flush=True)
+                import traceback
+                traceback.print_exc()
+    except Exception as e:
+        print(f"[FATAL] Main execution failed: {e}", flush=True)
+        import traceback
+        traceback.print_exc()
+        raise
 
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    try:
+        asyncio.run(main())
+    except Exception as e:
+        print(f"[CRITICAL] Script failed: {e}", flush=True)
+        import traceback
+        traceback.print_exc()
+        exit(1)

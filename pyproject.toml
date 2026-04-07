@@ -33,7 +33,7 @@ dependencies = [
 ]
 
 [project.urls]
-Homepage = "https://huggingface.co/spaces/Hollenite/auto-veh-v2"
+Homepage = "https://huggingface.co/spaces/Hollenite/auto-veh-v3"
 Repository = "https://github.com/Hollenite/auto-veh"
 
 [project.scripts]
