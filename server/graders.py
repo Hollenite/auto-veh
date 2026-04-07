@@ -28,7 +28,7 @@ from server.simulation import EMERGENCY_TIMEOUT, MAX_QUEUE_SIZE
 # Helpers
 # ---------------------------------------------------------------------------
 
-_EPSILON = 1e-6
+_EPSILON = 0.001  # Increased from 1e-6 for better margin away from boundaries
 
 def _clamp(value: float) -> float:
     """Clamp a value to the open interval (0.0, 1.0) — boundaries excluded."""
@@ -60,16 +60,16 @@ def _compute_emergency_score(episode_history: list[dict]) -> float:
     expiry). The score is the mean of
     ``1.0 - (steps_waited / EMERGENCY_TIMEOUT)`` across all emergencies.
 
-    If no emergencies occurred during the episode, returns 1.0 (perfect).
+    If no emergencies occurred during the episode, returns 1.0 - _EPSILON (perfect).
 
     Args:
         episode_history: List of per-step state dicts.
 
     Returns:
-        Emergency response score in [0.0, 1.0].
+        Emergency response score in (0.0, 1.0).
     """
     if not episode_history:
-        return 1.0 - _EPSILON
+        return _clamp(1.0 - _EPSILON)
 
     # Track emergency waiting durations by detecting transitions.
     # An emergency "event" starts when emergency_present goes from
@@ -95,14 +95,14 @@ def _compute_emergency_score(episode_history: list[dict]) -> float:
         emergency_wait_durations.append(current_wait)
 
     if not emergency_wait_durations:
-        return 1.0 - _EPSILON
+        return _clamp(1.0 - _EPSILON)
 
     # Score each emergency event
     scores = [
         _clamp(1.0 - (wait / EMERGENCY_TIMEOUT))
         for wait in emergency_wait_durations
     ]
-    return float(np.mean(scores))
+    return _clamp(float(np.mean(scores)))
 
 
 def _compute_queue_balance_score(episode_history: list[dict]) -> float:
@@ -117,10 +117,10 @@ def _compute_queue_balance_score(episode_history: list[dict]) -> float:
         episode_history: List of per-step state dicts.
 
     Returns:
-        Queue balance score in [0.0, 1.0].
+        Queue balance score in (0.0, 1.0).
     """
     if not episode_history:
-        return 1.0 - _EPSILON
+        return _clamp(1.0 - _EPSILON)
 
     final_queues = episode_history[-1]["queues"]
     queue_values = list(final_queues.values())
@@ -135,10 +135,10 @@ def _compute_wait_score(episode_history: list[dict]) -> float:
     Acceptable threshold = half the episode length.
     
     Returns:
-        Wait quality score in [0.0, 1.0].
+        Wait quality score in (0.0, 1.0).
     """
     if not episode_history:
-        return 1.0 - _EPSILON
+        return _clamp(1.0 - _EPSILON)
     # Use total_wait_time from last step divided by steps to get avg
     last = episode_history[-1]
     steps = len(episode_history)
@@ -153,10 +153,10 @@ def _compute_stability_score(episode_history: list[dict]) -> float:
     Fewer switches relative to episode length = higher score.
     
     Returns:
-        Stability score in [0.0, 1.0].
+        Stability score in (0.0, 1.0).
     """
     if not episode_history:
-        return 1.0 - _EPSILON
+        return _clamp(1.0 - _EPSILON)
     # Count phase changes by detecting when current_phase changes between steps
     switches = 0
     for i in range(1, len(episode_history)):
@@ -173,10 +173,10 @@ def _compute_fairness_score(episode_history: list[dict]) -> float:
     A perfectly fair controller has equal avg_wait across all directions.
     
     Returns:
-        Fairness score in [0.0, 1.0]. 1.0 = perfectly fair.
+        Fairness score in (0.0, 1.0). 1.0 - _EPSILON = perfectly fair.
     """
     if not episode_history:
-        return 1.0 - _EPSILON
+        return _clamp(1.0 - _EPSILON)
 
     last = episode_history[-1]
 
@@ -188,7 +188,7 @@ def _compute_fairness_score(episode_history: list[dict]) -> float:
     ]
 
     if not any(values) or max(values) == 0:
-        return 1.0 - _EPSILON
+        return _clamp(1.0 - _EPSILON)
 
     return _clamp(1.0 - (max(values) - min(values)) / max(max(values), 1.0))
 
@@ -208,10 +208,10 @@ def grade_easy(episode_history: list[dict]) -> float:
         episode_history: List of per-step state dicts from the episode.
 
     Returns:
-        Score in [0.0, 1.0].
+        Score strictly in (0.0, 1.0).
     """
     max_possible = 50 * 4  # 200
-    return _compute_throughput_score(episode_history, max_possible)
+    return _clamp(_compute_throughput_score(episode_history, max_possible))
 
 
 def grade_medium(episode_history: list[dict]) -> float:
@@ -224,6 +224,9 @@ def grade_medium(episode_history: list[dict]) -> float:
         stability     10%
     
     Max possible clearance = 50 steps × 4 vehicles = 200.
+    
+    Returns:
+        Score strictly in (0.0, 1.0).
     """
     max_possible = 50 * 4
     throughput = _compute_throughput_score(episode_history, max_possible)
@@ -249,6 +252,9 @@ def grade_hard(episode_history: list[dict]) -> float:
         stability      5%
     
     Max possible clearance = 60 steps × 4 vehicles = 240.
+    
+    Returns:
+        Score strictly in (0.0, 1.0).
     """
     max_possible = 60 * 4
     throughput = _compute_throughput_score(episode_history, max_possible)
@@ -284,7 +290,7 @@ def grade_episode(task_id: str, episode_history: list[dict]) -> float:
         episode_history: List of per-step state dicts from the episode.
 
     Returns:
-        Clamped float score in [0.0, 1.0].
+        Clamped float score strictly in (0.0, 1.0).
 
     Raises:
         ValueError: If ``task_id`` is not recognised.
