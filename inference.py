@@ -148,8 +148,10 @@ async def run_episode(task_id: str) -> EpisodeResult:
     rewards: list[float] = []
     success = False
     step_count = 0
-    score = 0.0
+    _EPSILON = 1e-6
+    score = _EPSILON
     env = None
+    
 
     try:
         print(f"[START] task={task_id} env={ENV_NAME} model={MODEL_NAME}", flush=True)
@@ -187,7 +189,7 @@ async def run_episode(task_id: str) -> EpisodeResult:
             )
 
         max_total_reward = task_config["max_steps"] * MAX_REWARD_PER_STEP
-        score = min(1.0, max(0.0, sum(rewards) / max_total_reward)) if max_total_reward > 0 else 0.0
+        score = min(1.0 - _EPSILON, max(_EPSILON, sum(rewards) / max_total_reward)) if max_total_reward > 0 else _EPSILON
 
         threshold = task_config.get("success_threshold", 0.0)
         success = (observation.reward is not None and observation.reward > threshold) if hasattr(observation, 'reward') else False
@@ -206,7 +208,7 @@ async def run_episode(task_id: str) -> EpisodeResult:
                 print(f"[DEBUG] env.close() error: {e}", flush=True)
         print(
             f"[END] success={format_bool(success)} steps={step_count} "
-            f"score={score:.2f} rewards={format_rewards(rewards)}",
+            f"score={score:.6f} rewards={format_rewards(rewards)}",
             flush=True,
         )
 

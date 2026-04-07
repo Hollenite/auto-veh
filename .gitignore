@@ -1,5 +1,6 @@
 venv/
 .env
+test_graders.py
 traffic_dqn_easy.pt
 traffic_dqn_easy_interrupted.pt
 traffic_dqn_medium.pt
@@ -9,3 +10,4 @@ __pycache__/
 *.pyc
 *.pyo
 .DS_Store
+
