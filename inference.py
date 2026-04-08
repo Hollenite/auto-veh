@@ -11,11 +11,18 @@ from models import SignalCommand, TrafficAction, TrafficObservation
 from client.client import TrafficEnv
 from server.tasks import ALL_TASKS
 
-API_BASE_URL = os.getenv("API_BASE_URL", "https://api.openai.com/v1")
-MODEL_NAME = os.getenv("MODEL_NAME", "gpt-4.1-mini")
+API_BASE_URL = os.getenv("API_BASE_URL", "https://router.huggingface.co/v1")
+MODEL_NAME = os.getenv("MODEL_NAME", "openai/gpt-4-turbo")
 API_KEY = os.getenv("API_KEY")
-HF_TOKEN = os.getenv("HF_TOKEN")  # fallback for local testing
+HF_TOKEN = os.getenv("HF_TOKEN")  # Primary auth method
 LOCAL_IMAGE_NAME = os.getenv("LOCAL_IMAGE_NAME", "traffic-control-env")
+TASK_ID_FILTER = os.getenv("TASK_ID")
+MAX_EXTRA_STEPS = 5
+ENV_NAME = "traffic-control-env"
+
+# Ensure we have valid credentials
+if not (API_KEY or HF_TOKEN):
+    raise ValueError("API_KEY or HF_TOKEN environment variable is required")
 TASK_ID_FILTER = os.getenv("TASK_ID")
 MAX_EXTRA_STEPS = 5
 ENV_NAME = "traffic-control-env"
@@ -71,24 +78,21 @@ def heuristic_policy(observation: TrafficObservation) -> SignalCommand:
 
 
 def llm_policy(observation: TrafficObservation) -> Optional[SignalCommand]:
-    # CRITICAL: Always attempt API calls with injected credentials
-    # The validator injects API_KEY and API_BASE_URL - use them directly
+    # Use API_KEY or HF_TOKEN (validator provides one of these)
+    api_key = API_KEY or HF_TOKEN
     
-    print(f"[DEBUG] llm_policy called - attempting LLM inference", flush=True)
-    
-    # Use injected API_KEY directly, this is what the validator tracks
-    api_key = API_KEY or HF_TOKEN or ""
-    
-    # Always try to make the API call - don't return None early
+    if not api_key or api_key.strip().lower() in {"dummy", "test", "local"}:
+        print(f"[DEBUG] Skipping LLM (no valid credentials)", flush=True)
+        return None
+
     try:
-        print(f"[DEBUG] Creating OpenAI client with base_url={API_BASE_URL}", flush=True)
+        print(f"[DEBUG] Creating inference client: {API_BASE_URL}", flush=True)
         client = OpenAI(
             base_url=API_BASE_URL,
             api_key=api_key,
         )
-        print(f"[DEBUG] OpenAI client created successfully", flush=True)
     except Exception as e:
-        print(f"[ERROR] Failed to create OpenAI client: {e}", flush=True)
+        print(f"[ERROR] Failed to create client: {e}", flush=True)
         return None
 
     prompt = f"""
@@ -116,37 +120,30 @@ Reply with only the action string.
 """.strip()
 
     try:
-        print(f"[DEBUG] Making API request to {API_BASE_URL} with model {MODEL_NAME}", flush=True)
-        response = client.chat.completions.create(
+        print(f"[DEBUG] Calling {MODEL_NAME} via LLM proxy", flush=True)
+        # Use responses.create() - this is what HuggingFace LLM router expects
+        response = client.responses.create(
             model=MODEL_NAME,
-            messages=[{"role": "user", "content": prompt}],
-            temperature=0.1,
-            max_tokens=50,
+            input=prompt,
         )
-        print(f"[DEBUG] API call successful, got response", flush=True)
-        text = (response.choices[0].message.content or "").strip().lower()
+        print(f"[DEBUG] LLM response received", flush=True)
+        text = getattr(response, "output_text", "").strip().lower()
         if not text:
             return None
         command_text = text.splitlines()[0].strip()
         allowed = {command.value: command for command in SignalCommand}
         result = allowed.get(command_text)
-        print(f"[DEBUG] LLM returned action: {command_text} -> {result}", flush=True)
+        print(f"[DEBUG] LLM action: {command_text} -> {result}", flush=True)
         return result
     except Exception as e:
-        print(f"[ERROR] API call failed: {e}", flush=True)
-        import traceback
-        traceback.print_exc()
+        print(f"[ERROR] LLM call failed: {e}", flush=True)
         return None
 
 
 def choose_action(observation: TrafficObservation) -> SignalCommand:
-    print(f"[DEBUG] choose_action called", flush=True)
-    print(f"[DEBUG] Calling llm_policy...", flush=True)
     llm_choice = llm_policy(observation)
     if llm_choice is not None:
-        print(f"[DEBUG] LLM returned action: {llm_choice}", flush=True)
         return llm_choice
-    print(f"[DEBUG] LLM returned None, falling back to heuristic", flush=True)
     return heuristic_policy(observation)
 
 
@@ -255,18 +252,7 @@ async def run_episode(task_id: str) -> EpisodeResult:
 
 async def main() -> None:
     try:
-        print(f"[DEBUG] Starting inference with API_KEY set: {bool(API_KEY)}", flush=True)
-        print(f"[DEBUG] API_BASE_URL: {API_BASE_URL}", flush=True)
-        print(f"[DEBUG] MODEL_NAME: {MODEL_NAME}", flush=True)
-        print(f"[DEBUG] LOCAL_IMAGE_NAME: {LOCAL_IMAGE_NAME}", flush=True)
-        
-        api_key = API_KEY or HF_TOKEN
-        print(f"[DEBUG] API_KEY set: {bool(API_KEY)}", flush=True)
-        print(f"[DEBUG] HF_TOKEN set: {bool(HF_TOKEN)}", flush=True)
-        print(f"[DEBUG] API_BASE_URL: {API_BASE_URL}", flush=True)
-        if api_key is None:
-            print("[DEBUG] No API key available — LLM policy disabled, falling back to heuristic.", flush=True)
-        print(f"[DEBUG] Using LOCAL_IMAGE_NAME: {LOCAL_IMAGE_NAME}", flush=True)
+        print(f"[START] API_BASE_URL={API_BASE_URL} MODEL={MODEL_NAME}", flush=True)
         task_ids = [TASK_ID_FILTER] if TASK_ID_FILTER else ["easy", "medium", "hard"]
         for task_id in task_ids:
             try:
